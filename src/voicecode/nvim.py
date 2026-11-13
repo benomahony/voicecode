@@ -57,6 +57,17 @@ class NvimEditor:
         assert (r1, c1) <= (r2, c2), f"splice starts at {(r1, c1)}, after its end {(r2, c2)}"
         self.nvim.api.buf_set_text(self.nvim.buffers[buffer], r1, c1, r2, c2, text.split("\n"))
 
+    def comment(self, buffer: int) -> tuple[str, str]:
+        """The buffer's 'commentstring' split around %s, e.g. ("#", "") or ("/*", "*/");
+        ("", "") when it has none, so speech is plain text."""
+        assert buffer > 0, f"buffer {buffer} does not exist; Neovim numbers buffers from 1"
+        style = self.nvim.api.get_option_value("commentstring", {"buf": buffer})
+        if "%s" not in style:
+            return ("", "")
+        opener, closer = style.split("%s", 1)
+        assert opener.strip(), f"buffer {buffer} has commentstring {style!r} with no opener"
+        return opener.strip(), closer.strip()
+
     def place_cursor(self, buffer: int, offset: int) -> None:
         assert buffer > 0, f"buffer {buffer} does not exist; Neovim numbers buffers from 1"
         window = self.nvim.current.window

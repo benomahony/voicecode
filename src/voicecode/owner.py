@@ -1,7 +1,9 @@
 """The single writer of speech and code edits into a buffer.
 
-Speech is ordinary buffer text anchored at the cursor. Model edits are rebased over
-speech appended since they were requested and rejected on any other change.
+Speech is ordinary buffer text anchored at the cursor, written as a comment in the
+buffer's own syntax (from 'commentstring') so linters don't flag it while it waits for
+the model. Model edits are rebased over speech appended since they were requested and
+rejected on any other change.
 """
 
 import os
@@ -22,6 +24,70 @@ class Editor(Protocol):
     read: Callable[[int], str]  # Whole text of a buffer.
     splice: Callable[[int, range, str], None]  # Replace a character span of a buffer.
     place_cursor: Callable[[int, int], None]  # Move the cursor, if that buffer is active.
+    comment: Callable[[int], tuple[str, str]]  # A buffer's comment opener and closer.
+
+
+MARK = "voice:"  # Tags spoken comments, so the model can tell them from real ones.
+
+
+def line_rest(text: str, offset: int) -> str:
+    """What follows `offset` on its line."""
+    assert 0 <= offset <= len(text), f"offset {offset} is outside the {len(text)}-character text"
+    end = text.find("\n", offset)
+    rest = text[offset:] if end < 0 else text[offset:end]
+    assert "\n" not in rest, f"line_rest returned more than one line: {rest!r}"
+    return rest
+
+
+def word_end(text: str, offset: int) -> int:
+    """`offset`, moved past the rest of a word it falls inside, so speech never splits one."""
+    assert 0 <= offset <= len(text), f"offset {offset} is outside the {len(text)}-character text"
+    end = offset
+    if end and (text[end - 1].isalnum() or text[end - 1] == "_"):
+        while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+            end += 1
+    assert end >= offset, f"word_end moved {offset} backwards to {end}"
+    return end
+
+
+def anchor_offset(text: str, cursor: int, comment: tuple[str, str]) -> int:
+    """Where speech for a cursor goes: at the cursor, but never inside a word; and for
+    line comments with code after the cursor, at the end of that line as a trailing
+    comment, since a line comment would otherwise comment out or split that code."""
+    opener, closer = comment
+    if opener and not closer and line_rest(text, cursor).strip():
+        offset = cursor + len(line_rest(text, cursor))
+    else:
+        offset = word_end(text, cursor)
+    assert cursor <= offset <= len(text), f"anchor {offset} is before cursor {cursor}"
+    assert not line_rest(text, offset).strip() or not opener or closer or offset == cursor, (
+        "a line comment must not be anchored before code on its line"
+    )
+    return offset
+
+
+def render(words: tuple[str, ...], before: str, after: str, comment: tuple[str, str]) -> str:
+    """Spoken words as buffer text between `before` (the character ahead of them) and
+    `after` (the rest of their line). With a comment opener, a voice comment; a line
+    comment followed by code on its line ends the line, so that code stays code."""
+    assert len(before) <= 1, f"before is one character or none, got {before!r}"
+    assert "\n" not in after, f"after is the rest of one line, got {after!r}"
+    if not words:
+        return ""
+    opener, closer = comment
+    spoken = " ".join(words)
+    if closer:
+        spoken = spoken.replace(closer, "")  # Speech can't end the comment early.
+    text = spoken
+    if opener:
+        text = f"{opener} {MARK} {spoken}" + (f" {closer}" if closer else "")
+    if before and not before.isspace():
+        text = " " + text
+    if opener and not closer and after.strip():
+        text += "\n"
+    elif after[:1] and not after[:1].isspace():
+        text += " "
+    return text
 
 
 @dataclass
@@ -30,7 +96,9 @@ class Anchor:
 
     buffer: int
     start: int
+    comment: tuple[str, str] = ("", "")  # The buffer's comment opener and closer.
     text: str = ""
+    words: tuple[str, ...] = ()  # The ASR words `text` renders.
     skip: int = 0  # ASR words of this utterance already committed as ordinary text
 
 
@@ -38,7 +106,9 @@ class Anchor:
 class Snapshot:
     buffer: int
     content: str
-    end: int  # end of the speech region the model was shown
+    start: int  # Start of the speech region the model was shown.
+    end: int  # End of the speech region the model was shown.
+    words: tuple[str, ...]  # The ASR words in that region.
 
 
 def map_offset(old: str, new: str, pos: int) -> int:
@@ -73,7 +143,8 @@ class BufferOwner:
             "editor.current() must count characters, not bytes"
         )
         self.editor: Editor = editor
-        self.anchor: Anchor = Anchor(buffer, offset)
+        comment = editor.comment(buffer)
+        self.anchor: Anchor = Anchor(buffer, anchor_offset(content, offset, comment), comment)
         self.content: str = content
         self.mark: tuple[int, int] | None = (
             None  # None: anchor at the cursor on the next utterance.
@@ -100,16 +171,18 @@ class BufferOwner:
         return self.mark is None or where != self.mark or self._edited()
 
     def _anchor_at_cursor(self) -> None:
-        buffer, offset = self.editor.current()
+        buffer, cursor = self.editor.current()
         content = self.editor.read(buffer)
+        comment = self.editor.comment(buffer)
+        offset = anchor_offset(content, cursor, comment)
         assert buffer > 0, f"editor reported buffer {buffer}; Neovim numbers buffers from 1"
         assert 0 <= offset <= len(content), (
             f"cursor offset {offset} is outside buffer {buffer} ({len(content)} characters); "
             "editor.current() must count characters, not bytes"
         )
-        self.anchor = Anchor(buffer, offset, skip=self.anchor.skip)
+        self.anchor = Anchor(buffer, offset, comment, skip=self.anchor.skip)
         self.content = content
-        self.mark = (buffer, offset)
+        self.mark = (buffer, cursor)
 
     def _write(self, span: range, text: str) -> None:
         assert 0 <= span.start <= span.stop <= len(self.content), (
@@ -140,6 +213,7 @@ class BufferOwner:
         else:
             self.anchor.start += len(self.anchor.text)
             self.anchor.text = ""
+            self.anchor.words = ()
         self.anchor.skip = 0
         assert not self.anchor.text, "a new utterance must start with no speech placed"
         assert 0 <= self.anchor.start <= len(self.content), (
@@ -151,17 +225,15 @@ class BufferOwner:
         a = self.anchor
         if self._diverged():
             # The user moved or edited: placed speech stays, new speech follows the cursor.
-            a.skip += len(a.text.split())
+            a.skip += len(a.words)
             self._anchor_at_cursor()
             a = self.anchor
-        text = " ".join(words.split()[a.skip :])
-        old_end = a.start + len(a.text)
-        if text and a.start and not self.content[a.start - 1].isspace():
-            text = " " + text
-        if text and old_end < len(self.content) and not self.content[old_end].isspace():
-            text += " "
         assert a.skip >= 0, f"skipping {a.skip} words; skip counts words already placed"
-        a.text = text
+        spoken = tuple(words.split()[a.skip :])
+        old_end = a.start + len(a.text)
+        before = self.content[a.start - 1] if a.start else ""
+        text = render(spoken, before, line_rest(self.content, old_end), a.comment)
+        a.text, a.words = text, spoken
         self._write(range(a.start, old_end), text)
         self._follow()
         assert self.content[a.start : a.start + len(text)] == text, (
@@ -179,7 +251,7 @@ class BufferOwner:
         assert self.content[a.start : end] == a.text, (
             "anchored speech differs from the buffer; every speech write must go through _write"
         )
-        return Snapshot(a.buffer, self.content, end)
+        return Snapshot(a.buffer, self.content, a.start, end, a.words)
 
     def apply_code(self, snap: Snapshot, replacement: str) -> bool:
         """Rebase a model edit onto speech appended since `snap`; reject anything else."""
@@ -193,20 +265,29 @@ class BufferOwner:
             return False
         end = a.start + len(a.text)
         current = self.content
-        if end < snap.end or current[: snap.end] != snap.content[: snap.end]:
-            return False
         if current[end:] != snap.content[snap.end :]:
             return False
-        moved = self.mark is None or self.editor.current() != self.mark
         new_end = map_offset(snap.content, replacement, snap.end)
-        tail = current[snap.end : end]
-        result = replacement[:new_end] + tail + replacement[new_end:]
-        if a.start < snap.end:
-            a.skip += len(current[a.start : snap.end].split())
-            a.text = tail
-            a.start = new_end
-        else:
+        if a.start == snap.start:
+            # Same utterance: the speech may have grown, so compare words, not text.
+            if current[: a.start] != snap.content[: snap.start]:
+                return False
+            seen = len(snap.words)  # Words the model acted on.
+            if a.words[:seen] != snap.words:
+                return False  # The recognizer revised words the model already acted on.
+            left = a.words[seen:]
+            before = replacement[new_end - 1 : new_end]
+            tail = render(left, before, line_rest(replacement, new_end), a.comment)
+            a.skip += seen
+            a.words, a.text, a.start = left, tail, new_end
+        elif a.start >= snap.end and current[: snap.end] == snap.content[: snap.end]:
+            # A later utterance, already rendered after the snapshot's speech.
+            tail = current[snap.end : end]
             a.start = new_end + a.start - snap.end
+        else:
+            return False
+        moved = self.mark is None or self.editor.current() != self.mark
+        result = replacement[:new_end] + tail + replacement[new_end:]
         prefix = len(os.path.commonprefix([current, result]))
         suffix = len(os.path.commonprefix([current[prefix:][::-1], result[prefix:][::-1]]))
         self._write(range(prefix, len(current) - suffix), result[prefix : len(result) - suffix])
