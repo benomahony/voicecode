@@ -1,6 +1,6 @@
 import numpy as np
 
-from voicecode.owner import BufferOwner
+from voicecode.owner import UNSETTLED, BufferOwner
 from voicecode.speech import downmix
 
 
@@ -123,16 +123,14 @@ def test_revised_speech_rejects_outdated_code_edit() -> None:
     editor = FakeEditor()
     owner = BufferOwner(editor)
     owner.start_utterance()
-    owner.partial("create a function")
+    owner.partial("please create a function now")
     snapshot = owner.snapshot()
-    assert snapshot is not None, "speech in the buffer must give a snapshot for the model"
-    owner.partial("create the function")
+    assert snapshot is not None, "speech must give a snapshot"
+    owner.partial("please make the function now")
     assert not owner.apply_code(snapshot, "def wrong(): pass"), (
-        "a model edit must be rejected once the speech it saw was revised"
+        f"a revision before the last {UNSETTLED} words must void {snapshot!r}"
     )
-    assert editor.read(1) == "create the function", (
-        "a rejected edit must leave the revised speech untouched"
-    )
+    assert editor.read(1) == "please make the function now", editor.read(1)
 
 
 def test_manual_edits_are_never_overwritten() -> None:
@@ -277,7 +275,9 @@ def test_indented_python_keeps_its_indentation() -> None:
     owner.start_utterance()
     owner.partial("return y instead")
     assert editor.read(1) == "def f():\n    return x # AI: return y instead", editor.read(1)
-test_a_pause_continues_the_voice_comment_instead_of_opening_another() -> None:
+
+
+def test_a_pause_continues_the_voice_comment_instead_of_opening_another() -> None:
     editor = python("x = 1\n", cursor=6)
     owner = BufferOwner(editor)
     owner.start_utterance()
@@ -302,4 +302,30 @@ def test_a_continuation_gets_its_own_comment_once_the_one_it_joined_is_code() ->
     assert owner.apply_code(snapshot, "x = 1"), f"edit must rebase over {editor.read(1)!r}"
     assert editor.read(1) == "x = 1 # AI: and y two", (
         f"words that joined a comment now turned to code need their own: {editor.read(1)!r}"
+    )
+
+
+def test_a_code_edit_survives_the_recognizer_changing_punctuation_and_case() -> None:
+    editor = python()
+    owner = BufferOwner(editor)
+    owner.start_utterance()
+    owner.partial("Make x one.")
+    snapshot = owner.snapshot()
+    assert snapshot is not None, "speech must give a snapshot"
+    owner.partial("make x one, and y two")
+    assert owner.apply_code(snapshot, "x = 1"), f"punctuation must not void {snapshot!r}"
+    assert editor.read(1) == "x = 1 # AI: and y two", editor.read(1)
+
+
+def test_a_revised_last_word_comes_back_after_the_code_instead_of_being_lost() -> None:
+    editor = python()
+    owner = BufferOwner(editor)
+    owner.start_utterance()
+    owner.partial("make x one and act")
+    snapshot = owner.snapshot()
+    assert snapshot is not None, "speech must give a snapshot"
+    owner.partial("make x one and actually y two")
+    assert owner.apply_code(snapshot, "x = 1"), f"a half-heard last word must not void {snapshot!r}"
+    assert editor.read(1) == "x = 1 # AI: actually y two", (
+        f"the revised word must reappear, not vanish: {editor.read(1)!r}"
     )

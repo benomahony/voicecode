@@ -66,6 +66,34 @@ def anchor_offset(text: str, cursor: int, comment: tuple[str, str]) -> int:
     return offset
 
 
+UNSETTLED = 2  # Trailing words the recognizer may still revise without voiding an edit.
+
+
+def plain_word(word: str) -> str:
+    """A word without case or punctuation, which the recognizer revises freely."""
+    assert word and not any(c.isspace() for c in word), f"{word!r} must be one split() word"
+    plain = "".join(c for c in word.lower() if c.isalnum())
+    assert len(plain) <= len(word), f"{plain!r} is longer than {word!r}; it only drops characters"
+    return plain
+
+
+def agreed(current: tuple[str, ...], seen: tuple[str, ...]) -> int | None:
+    """How many of `seen`, the words a model acted on, the recognizer still agrees with,
+    ignoring case and punctuation; None if it revised more than the last UNSETTLED of
+    them, so the model's answer no longer fits what was said."""
+    count = 0
+    for now, then in zip(current, seen, strict=False):
+        if plain_word(now) != plain_word(then):
+            break
+        count += 1
+    settled = count >= len(seen) - UNSETTLED
+    assert 0 <= count <= min(len(current), len(seen)), f"agreed on {count} words"
+    assert all(plain_word(a) == plain_word(b) for a, b in zip(current[:count], seen)), (
+        f"{current[:count]} and {seen[:count]} must agree on every counted word"
+    )
+    return count if settled else None
+
+
 def line_before(text: str, offset: int) -> str:
     """What precedes `offset` on its line."""
     assert 0 <= offset <= len(text), f"offset {offset} is outside the {len(text)}-character text"
@@ -293,13 +321,13 @@ class BufferOwner:
             # Same utterance: the speech may have grown, so compare words, not text.
             if current[: a.start] != snap.content[: snap.start]:
                 return False
-            seen = len(snap.words)  # Words the model acted on.
-            if a.words[:seen] != snap.words:
+            kept = agreed(a.words, snap.words)
+            if kept is None:
                 return False  # The recognizer revised words the model already acted on.
-            left = a.words[seen:]
+            left = a.words[kept:]  # Revised trailing words come back after the code.
             before = line_before(replacement, new_end)
             tail = render(left, before, line_rest(replacement, new_end), a.comment)
-            a.skip += seen
+            a.skip += kept
             a.words, a.text, a.start = left, tail, new_end
         elif a.start >= snap.end and current[: snap.end] == snap.content[: snap.end]:
             # A later utterance after the snapshot's speech. Render it again: the comment
