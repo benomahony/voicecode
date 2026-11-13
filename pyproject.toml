@@ -1,7 +1,8 @@
 [project]
 name = "voicecode"
 version = "0.1.0"
-description = "Live speech-to-code in a single Neovim buffer"
+description = "Talk to Neovim: live speech to code, and code search by voice with EmbeddingGemma 2"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2",
@@ -11,10 +12,17 @@ dependencies = [
     "pydantic-ai>=1",
     "typer>=0.29.1",
     "rich>=15.0.0",
+    "sentence-transformers>=6",
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "librosa",
+    "tree-sitter-language-pack",
 ]
 
 [project.scripts]
 voicecode = "voicecode.main:app"
+code-chat = "code_chat.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "basedpyright>=1", "ruff>=0.9"]
@@ -22,6 +30,13 @@ dev = ["pytest>=8", "basedpyright>=1", "ruff>=0.9"]
 [build-system]
 requires = ["uv_build>=0.13.4,<0.14"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["voicecode", "code_chat"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
 
 [tool.ruff]
 line-length = 100
