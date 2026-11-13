@@ -9,6 +9,7 @@ class CallbackFlags(Protocol):
     def __bool__(self) -> bool: ...
 
 class _InputStream(Protocol):
+    active: bool
     def __enter__(self) -> Self: ...
     def __exit__(
         self,

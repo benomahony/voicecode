@@ -1,6 +1,7 @@
 import numpy as np
 
-from voicecode.main import BufferOwner, downmix
+from voicecode.owner import BufferOwner
+from voicecode.speech import downmix
 
 
 class FakeEditor:
@@ -36,8 +37,12 @@ def test_speech_is_inserted_at_cursor_not_end_of_buffer() -> None:
     owner.start_utterance()
     owner.partial("create a function")
     owner.partial("create a function named hello")
-    assert editor.read(1) == "x = 1\ncreate a function named hello\ny = 2"
-    assert editor.cursor == len("x = 1\ncreate a function named hello")
+    assert editor.read(1) == "x = 1\ncreate a function named hello\ny = 2", (
+        "speech must land on the cursor line, revised in place, not at the end of the buffer"
+    )
+    assert editor.cursor == len("x = 1\ncreate a function named hello"), (
+        "the cursor must follow the speech so the next words continue it"
+    )
 
 
 def test_speech_follows_cursor_moves_without_duplicating_words() -> None:
@@ -47,7 +52,9 @@ def test_speech_follows_cursor_moves_without_duplicating_words() -> None:
     owner.partial("one two")
     editor.cursor = 0
     owner.partial("one two three")
-    assert editor.read(1) == "three a one two\nb"
+    assert editor.read(1) == "three a one two\nb", (
+        "after a cursor move, placed words stay put and only new words go to the cursor"
+    )
 
 
 def test_speech_follows_active_buffer() -> None:
@@ -58,8 +65,12 @@ def test_speech_follows_active_buffer() -> None:
     editor.buffers[2] = ""
     editor.active, editor.cursor = 2, 0
     owner.partial("hello world")
-    assert editor.read(1) == "hello first"
-    assert editor.read(2) == "world"
+    assert editor.read(1) == "hello first", (
+        "words placed before a buffer switch must stay in the first buffer"
+    )
+    assert editor.read(2) == "world", (
+        "speech after a buffer switch must go to the newly active buffer"
+    )
 
 
 def test_code_edit_lands_while_speech_continues() -> None:
@@ -68,12 +79,18 @@ def test_code_edit_lands_while_speech_continues() -> None:
     owner.start_utterance()
     owner.partial("create a function named hello")
     snapshot = owner.snapshot()
-    assert snapshot is not None
+    assert snapshot is not None, "speech in the buffer must give a snapshot for the model"
     owner.partial("create a function named hello that returns")
-    assert owner.apply_code(snapshot, "def hello():\n    pass\n")
-    assert editor.read(1) == "def hello():\n    pass that returns"
+    assert owner.apply_code(snapshot, "def hello():\n    pass\n"), (
+        "a model edit must apply when only speech was appended since the snapshot"
+    )
+    assert editor.read(1) == "def hello():\n    pass that returns", (
+        "speech that arrived during the model call must follow the generated code"
+    )
     owner.partial("create a function named hello that returns world")
-    assert editor.read(1) == "def hello():\n    pass that returns world"
+    assert editor.read(1) == "def hello():\n    pass that returns world", (
+        "later partials must extend the leftover speech without repeating consumed words"
+    )
 
 
 def test_code_edit_survives_next_utterance_starting() -> None:
@@ -81,14 +98,20 @@ def test_code_edit_survives_next_utterance_starting() -> None:
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("make x one")
-    snapshot = owner.finish_utterance()
-    assert snapshot is not None
+    snapshot = owner.snapshot()
+    assert snapshot is not None, "speech in the buffer must give a snapshot for the model"
     owner.start_utterance()
     owner.partial("and y two")
-    assert owner.apply_code(snapshot, "x = 1")
-    assert editor.read(1) == "x = 1 and y two"
+    assert owner.apply_code(snapshot, "x = 1"), (
+        "a model edit must still apply after the next utterance has started"
+    )
+    assert editor.read(1) == "x = 1 and y two", (
+        "the new utterance must follow the code that replaced the previous one"
+    )
     owner.partial("and y two please")
-    assert editor.read(1) == "x = 1 and y two please"
+    assert editor.read(1) == "x = 1 and y two please", (
+        "the new utterance must keep revising in place after the edit"
+    )
 
 
 def test_revised_speech_rejects_outdated_code_edit() -> None:
@@ -97,10 +120,14 @@ def test_revised_speech_rejects_outdated_code_edit() -> None:
     owner.start_utterance()
     owner.partial("create a function")
     snapshot = owner.snapshot()
-    assert snapshot is not None
+    assert snapshot is not None, "speech in the buffer must give a snapshot for the model"
     owner.partial("create the function")
-    assert not owner.apply_code(snapshot, "def wrong(): pass")
-    assert editor.read(1) == "create the function"
+    assert not owner.apply_code(snapshot, "def wrong(): pass"), (
+        "a model edit must be rejected once the speech it saw was revised"
+    )
+    assert editor.read(1) == "create the function", (
+        "a rejected edit must leave the revised speech untouched"
+    )
 
 
 def test_manual_edits_are_never_overwritten() -> None:
@@ -109,10 +136,14 @@ def test_manual_edits_are_never_overwritten() -> None:
     owner.start_utterance()
     owner.partial("add a function")
     snapshot = owner.snapshot()
-    assert snapshot is not None
+    assert snapshot is not None, "speech in the buffer must give a snapshot for the model"
     editor.type(0, "# note\n")
-    assert not owner.apply_code(snapshot, "x = 3")
-    assert editor.read(1) == "# note\nx = 1\nadd a function"
+    assert not owner.apply_code(snapshot, "x = 3"), (
+        "a model edit must be rejected after a manual edit"
+    )
+    assert editor.read(1) == "# note\nx = 1\nadd a function", (
+        "a manual edit must survive a rejected model edit"
+    )
 
 
 def test_older_response_cannot_overwrite_newer_applied_edit() -> None:
@@ -123,10 +154,16 @@ def test_older_response_cannot_overwrite_newer_applied_edit() -> None:
     older = owner.snapshot()
     owner.partial("make x one and y two")
     newer = owner.snapshot()
-    assert older is not None and newer is not None
-    assert owner.apply_code(newer, "x = 1\ny = 2")
-    assert not owner.apply_code(older, "x = 1")
-    assert editor.read(1) == "x = 1\ny = 2"
+    assert older is not None and newer is not None, (
+        "both utterances must give snapshots for the model"
+    )
+    assert owner.apply_code(newer, "x = 1\ny = 2"), (
+        f"the newer model edit must apply: snapshot {newer!r}, buffer {editor.read(1)!r}"
+    )
+    assert not owner.apply_code(older, "x = 1"), (
+        "an older model response must never overwrite a newer applied edit"
+    )
+    assert editor.read(1) == "x = 1\ny = 2", "the newer edit must still be in the buffer"
 
 
 def test_moved_cursor_is_left_alone_by_code_edit() -> None:
@@ -135,12 +172,16 @@ def test_moved_cursor_is_left_alone_by_code_edit() -> None:
     owner.start_utterance()
     owner.partial("make x one")
     snapshot = owner.snapshot()
-    assert snapshot is not None
+    assert snapshot is not None, "speech in the buffer must give a snapshot for the model"
     editor.cursor = 0
-    assert owner.apply_code(snapshot, "z = 0\nx = 1")
-    assert editor.cursor == 0
+    assert owner.apply_code(snapshot, "z = 0\nx = 1"), (
+        "a model edit must apply even though the user moved the cursor"
+    )
+    assert editor.cursor == 0, "a model edit must not drag the cursor back after the user moved it"
     owner.partial("make x one now")
-    assert editor.read(1) == "now z = 0\nx = 1"
+    assert editor.read(1) == "now z = 0\nx = 1", (
+        "speech after the edit must go to where the user moved the cursor"
+    )
 
 
 def test_downmix_hears_any_channel_of_an_aggregate_device() -> None:
@@ -148,6 +189,8 @@ def test_downmix_hears_any_channel_of_an_aggregate_device() -> None:
     frames[:, 2] = 0.5  # meeting audio on the third channel, mic silent
     frames[0, :] = 0.9  # everyone at once clips instead of wrapping
     mixed = downmix(frames)
-    assert mixed.shape == (4,)
-    assert mixed.dtype == np.float32
-    assert list(mixed) == [1.0, 0.5, 0.5, 0.5]
+    assert mixed.shape == (4,), "downmix must give one mono sample per frame"
+    assert mixed.dtype == np.float32, "downmix must keep float32 samples for Whisper"
+    assert list(mixed) == [1.0, 0.5, 0.5, 0.5], (
+        "audio on any channel must be heard, and overlapping speakers clip rather than wrap"
+    )

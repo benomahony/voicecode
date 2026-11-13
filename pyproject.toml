@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-voicecode = "voicecode.main:main"
+voicecode = "voicecode.main:app"
 
 [dependency-groups]
 dev = ["pytest>=8", "basedpyright>=1", "ruff>=0.9"]

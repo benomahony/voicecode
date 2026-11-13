@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/benomahony/zanity/main/zanity.schema.json
+
+[rules]
+# Every rule, as `zanity check --production` runs; overwatch reads this file.
+select = ["all"]
+disable = []
