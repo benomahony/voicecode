@@ -1,10 +1,10 @@
-from typing import Literal, TypedDict, overload
+from typing import Literal, Protocol, TypedDict, overload
 
 class Mode(TypedDict):
     mode: str
     blocking: bool
 
-class Buffer:
+class Buffer(Protocol):
     number: int
     name: str
     @overload
@@ -12,18 +12,18 @@ class Buffer:
     @overload
     def __getitem__(self, index: slice) -> list[str]: ...
 
-class Window:
+class Window(Protocol):
     buffer: Buffer
     cursor: tuple[int, int]
 
-class Current:
+class Current(Protocol):
     window: Window
     buffer: Buffer
 
-class Buffers:
+class Buffers(Protocol):
     def __getitem__(self, number: int) -> Buffer: ...
 
-class Api:
+class Api(Protocol):
     def get_mode(self) -> Mode: ...
     def buf_set_text(
         self,
@@ -35,9 +35,12 @@ class Api:
         replacement: list[str],
     ) -> None: ...
 
-class Nvim:
+class Nvim(Protocol):
     current: Current
     buffers: Buffers
     api: Api
 
-def attach(session_type: Literal["socket"], *, path: str) -> Nvim: ...
+class _Attach(Protocol):
+    def __call__(self, session_type: Literal["socket"], *, path: str) -> Nvim: ...
+
+attach: _Attach

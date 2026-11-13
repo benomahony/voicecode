@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import queue
@@ -11,13 +12,15 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Annotated, Protocol
+from typing import Annotated, Protocol, final
 
 import numpy as np
 import numpy.typing as npt
 import typer
+from pydantic_ai.exceptions import ModelAuthenticationError, UserError
+from pynvim.api import NvimError
 
 SAMPLE_RATE = 16_000
 FRAME_SECONDS = 0.1
@@ -37,7 +40,7 @@ class Editor(Protocol):
 
     def name(self, buffer: int) -> str: ...
     def read(self, buffer: int) -> str: ...
-    def splice(self, buffer: int, start: int, end: int, text: str) -> None: ...
+    def splice(self, buffer: int, span: range, text: str) -> None: ...
     def place_cursor(self, buffer: int, offset: int) -> None: ...
 
 
@@ -89,12 +92,14 @@ class BufferOwner:
         self.content = self.editor.read(buffer)
         self.mark = (buffer, offset)
 
-    def _write(self, start: int, end: int, text: str, cursor: int, move: bool = True) -> None:
-        self.editor.splice(self.anchor.buffer, start, end, text)
-        self.content = self.content[:start] + text + self.content[end:]
-        if move:
-            self.editor.place_cursor(self.anchor.buffer, cursor)
-            self.mark = self.editor.current()
+    def _write(self, span: range, text: str) -> None:
+        self.editor.splice(self.anchor.buffer, span, text)
+        self.content = self.content[: span.start] + text + self.content[span.stop :]
+
+    def _follow(self) -> None:
+        """Put the cursor after the speech and remember where we left it."""
+        self.editor.place_cursor(self.anchor.buffer, self.anchor.start + len(self.anchor.text))
+        self.mark = self.editor.current()
 
     def start_utterance(self) -> None:
         if self._diverged():
@@ -119,7 +124,8 @@ class BufferOwner:
         if text and old_end < len(self.content) and not self.content[old_end].isspace():
             text += " "
         a.text = text
-        self._write(a.start, old_end, text, a.start + len(text))
+        self._write(range(a.start, old_end), text)
+        self._follow()
 
     def snapshot(self) -> Snapshot | None:
         a = self.anchor
@@ -155,13 +161,9 @@ class BufferOwner:
             a.start = new_end + a.start - snap.end
         prefix = len(os.path.commonprefix([current, result]))
         suffix = len(os.path.commonprefix([current[prefix:][::-1], result[prefix:][::-1]]))
-        self._write(
-            prefix,
-            len(current) - suffix,
-            result[prefix : len(result) - suffix],
-            a.start + len(a.text),
-            move=not moved,
-        )
+        self._write(range(prefix, len(current) - suffix), result[prefix : len(result) - suffix])
+        if not moved:
+            self._follow()
         return True
 
 
@@ -193,9 +195,9 @@ class NvimEditor:
     def read(self, buffer: int) -> str:
         return "\n".join(self.nvim.buffers[buffer][:])
 
-    def splice(self, buffer: int, start: int, end: int, text: str) -> None:
+    def splice(self, buffer: int, span: range, text: str) -> None:
         content = self.read(buffer)
-        (r1, c1), (r2, c2) = char_to_position(content, start), char_to_position(content, end)
+        (r1, c1), (r2, c2) = (char_to_position(content, i) for i in (span.start, span.stop))
         self.nvim.api.buf_set_text(self.nvim.buffers[buffer], r1, c1, r2, c2, text.split("\n"))
 
     def place_cursor(self, buffer: int, offset: int) -> None:
@@ -210,11 +212,12 @@ class NvimEditor:
         window.cursor = (row + 1, col)
 
 
+@final
 class Transcriber:
     def __init__(self, model: str) -> None:
         from faster_whisper import WhisperModel
 
-        self.model: WhisperModel = WhisperModel(model, device="auto", compute_type="auto")
+        self.model = WhisperModel(model, device="auto", compute_type="auto")
 
     def transcribe(self, audio: npt.NDArray[np.float32]) -> str:
         assert audio.ndim == 1
@@ -255,143 +258,221 @@ class CodeEditor:
         return result.output
 
 
-async def run(address: str, model: str, asr_model: str) -> None:
-    import sounddevice as sd
-    from pynvim.api import NvimError
+def say(message: str, level: str = "info") -> None:
+    """User-facing status for the Neovim plugin: one "level<TAB>message" line on stdout."""
+    print(f"{level}\t{' '.join(message.split())}", flush=True)
 
-    # pynvim's sync client runs its own event loop, so it cannot be called from this one.
-    # One dedicated thread performs every Neovim call, which also serialises all writes.
-    writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voicecode-writer")
-    loop = asyncio.get_running_loop()
 
-    async def on_writer[T](fn: Callable[..., T], *args: object) -> T:
-        return await loop.run_in_executor(writer, fn, *args)
+def log(message: str) -> None:
+    """Diagnostics that only belong in the plugin's log file."""
+    print(" ".join(message.split()), file=sys.stderr, flush=True)
 
-    editor = await on_writer(NvimEditor, address)
-    owner = BufferOwner(editor)
-    transcriber = await asyncio.to_thread(Transcriber, asr_model)
-    coder = CodeEditor(model)
-    frames: queue.SimpleQueue[npt.NDArray[np.float32]] = queue.SimpleQueue()
-    tasks: set[asyncio.Task[None]] = set()
+
+@final
+class Writer:
+    """pynvim's sync client runs its own event loop, so it cannot be called from asyncio.
+    One dedicated thread performs every Neovim call, which also serialises all writes."""
+
+    def __init__(self) -> None:
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voicecode-writer")
+
+    async def call[T](self, fn: Callable[..., T], *args: object) -> T:
+        return await asyncio.get_running_loop().run_in_executor(self.pool, fn, *args)
+
+
+def downmix(indata: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+    """Sum every input channel to mono, so aggregate devices (mic plus meeting audio) are heard."""
+    return np.clip(indata.sum(axis=1, dtype=np.float32), -1.0, 1.0)
+
+
+@dataclass(frozen=True)
+class Options:
+    socket: str
+    model: str
+    asr_model: str
+    device: str | None  # Input device name (or unique part of it); None is the system default.
+
+
+@dataclass
+class Session:
+    """Microphone loop feeding the buffer owner and, continuously, the code model."""
+
+    options: Options
+    writer: Writer
+    editor: NvimEditor
+    transcriber: Transcriber
+    coder: CodeEditor
+    owner: BufferOwner = field(init=False)
+    frames: queue.SimpleQueue[npt.NDArray[np.float32]] = field(default_factory=queue.SimpleQueue)
+    tasks: set[asyncio.Task[None]] = field(default_factory=set)
     coding: asyncio.Task[None] | None = None
-    rerun = False
-    last_sent = ""
-
-    def on_audio(
-        indata: npt.NDArray[np.float32], frames_count: int, _time: object, status: object
-    ) -> None:
-        assert frames_count > 0
-        if status:
-            print(f"Audio: {status}", file=sys.stderr)
-        frames.put(indata[:, 0].copy())
-
-    async def edit_snapshot() -> None:
-        nonlocal last_sent
-        try:
-            snapshot = await on_writer(owner.snapshot)
-            if snapshot is None or snapshot.content == last_sent:
-                return
-            last_sent = snapshot.content
-            filename = await on_writer(editor.name, snapshot.buffer)
-            replacement = await coder.transform(snapshot.content, filename)
-            if not await on_writer(owner.apply_code, snapshot, replacement):
-                print("Stale edit discarded", file=sys.stderr)
-        except (RuntimeError, NvimError) as exc:
-            print(f"Code transformation failed: {exc}", file=sys.stderr)
-
-    def transform_soon() -> None:
-        """Keep one model call in flight; newer speech queues exactly one rerun."""
-        nonlocal coding, rerun
-        if coding is not None:
-            rerun = True
-            return
-
-        def done(_: asyncio.Task[None]) -> None:
-            nonlocal coding, rerun
-            coding = None
-            if rerun:
-                rerun = False
-                transform_soon()
-
-        coding = asyncio.create_task(edit_snapshot())
-        coding.add_done_callback(done)
-
-    utterance: list[npt.NDArray[np.float32]] = []
-    speaking = False
-    last_voice = 0.0
-    last_partial = 0.0
-    serial = 0
+    rerun: bool = False
+    last_sent: str = ""
+    utterance: list[npt.NDArray[np.float32]] = field(default_factory=list)
+    recent: deque[float] = field(default_factory=lambda: deque(maxlen=3))
+    speaking: bool = False
+    last_voice: float = 0.0
+    last_partial: float = 0.0
+    serial: int = 0
     final_task: asyncio.Task[None] | None = None
-    recent: deque[float] = deque(maxlen=3)
 
-    async def recognise(audio: npt.NDArray[np.float32], sequence: int) -> None:
+    def __post_init__(self) -> None:
+        self.owner = BufferOwner(self.editor)
+
+    @classmethod
+    async def open(cls, options: Options) -> Session:
+        coder = CodeEditor(options.model)  # Fails fast on a missing API key, before the ASR load.
+        writer = Writer()
+        editor = await writer.call(NvimEditor, options.socket)
+        say("Loading speech model")
+        transcriber = await asyncio.to_thread(Transcriber, options.asr_model)
+        return cls(options, writer, editor, transcriber, coder)
+
+    def on_audio(self, indata: npt.NDArray[np.float32], *rest: object) -> None:
+        """sounddevice callback: (indata, frames, time, status)."""
+        if rest[-1]:
+            log(f"Audio: {rest[-1]}")
+        self.frames.put(downmix(indata))
+
+    async def edit_snapshot(self) -> None:
+        try:
+            snapshot = await self.writer.call(self.owner.snapshot)
+            if snapshot is None or snapshot.content == self.last_sent:
+                return
+            self.last_sent = snapshot.content
+            filename = await self.writer.call(self.editor.name, snapshot.buffer)
+            replacement = await self.coder.transform(snapshot.content, filename)
+            if not await self.writer.call(self.owner.apply_code, snapshot, replacement):
+                log("Stale edit discarded")
+        except ModelAuthenticationError as exc:
+            say(f"The model provider rejected the API key: {exc}", "auth")
+        except (RuntimeError, NvimError) as exc:
+            say(f"Code edit failed: {exc}", "error")
+
+    def transform_soon(self) -> None:
+        """Keep one model call in flight; newer speech queues exactly one rerun."""
+        if self.coding is not None:
+            self.rerun = True
+            return
+        self.coding = asyncio.create_task(self.edit_snapshot())
+        self.coding.add_done_callback(self.transform_done)
+
+    def transform_done(self, _: asyncio.Task[None]) -> None:
+        self.coding = None
+        if self.rerun:
+            self.rerun = False
+            self.transform_soon()
+
+    async def recognise(self, audio: npt.NDArray[np.float32], sequence: int) -> None:
         """A newer ASR result supersedes an older one; only the owner edits."""
         try:
-            words = await asyncio.to_thread(transcriber.transcribe, audio)
-            if sequence != serial:
+            words = await asyncio.to_thread(self.transcriber.transcribe, audio)
+            if sequence != self.serial:
                 return
-            await on_writer(owner.partial, words)
-            transform_soon()
+            await self.writer.call(self.owner.partial, words)
+            self.transform_soon()
         except (RuntimeError, ValueError, NvimError) as exc:
-            print(f"Transcription failed: {exc}", file=sys.stderr)
+            say(f"Transcription failed: {exc}", "error")
 
-    print("Voicecode listening at the cursor. Ctrl-C to stop.", file=sys.stderr)
-    with sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=1600, callback=on_audio
-    ):
-        while True:
-            await asyncio.sleep(0.04)
-            while not frames.empty():
-                chunk = frames.get_nowait()
-                now = time.monotonic()
-                rms = math.sqrt(float(np.square(chunk).mean()))
-                recent.append(rms)
-                voice = sum(recent) / len(recent) > SILENCE_RMS
-                if voice and not speaking:
-                    if final_task is not None:
-                        await final_task
-                        final_task = None
-                    speaking = True
-                    await on_writer(owner.start_utterance)
-                    utterance.clear()
-                    last_partial = 0.0
-                if not speaking:
-                    continue
-                utterance.append(chunk)
-                if voice:
-                    last_voice = now
-                elapsed = len(utterance) * FRAME_SECONDS
-                finished = (now - last_voice >= SILENCE_SECONDS) or (
-                    elapsed >= MAX_UTTERANCE_SECONDS
-                )
-                if not finished and now - last_partial < PARTIAL_INTERVAL:
-                    continue
-                if elapsed < MIN_UTTERANCE_SECONDS:
-                    continue
-                last_partial = now
-                serial += 1
-                current = serial
-                audio = np.concatenate(utterance)
-                task = asyncio.create_task(recognise(audio, current))
-                tasks.add(task)
-                task.add_done_callback(tasks.discard)
-                if finished:
-                    final_task = task
-                    speaking = False
-                    utterance.clear()
-                    recent.clear()
+    async def begin_utterance(self) -> None:
+        if self.final_task is not None:
+            await self.final_task
+            self.final_task = None
+        self.speaking = True
+        await self.writer.call(self.owner.start_utterance)
+        self.utterance.clear()
+        self.last_partial = 0.0
+
+    def recognise_soon(self, now: float, finished: bool) -> None:
+        self.last_partial = now
+        self.serial += 1
+        task = asyncio.create_task(self.recognise(np.concatenate(self.utterance), self.serial))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        if finished:
+            self.final_task = task
+            self.speaking = False
+            self.utterance.clear()
+            self.recent.clear()
+
+    async def on_chunk(self, chunk: npt.NDArray[np.float32]) -> None:
+        now = time.monotonic()
+        self.recent.append(math.sqrt(float(np.square(chunk).mean())))
+        voice = sum(self.recent) / len(self.recent) > SILENCE_RMS
+        if voice and not self.speaking:
+            await self.begin_utterance()
+        if not self.speaking:
+            return
+        self.utterance.append(chunk)
+        if voice:
+            self.last_voice = now
+        elapsed = len(self.utterance) * FRAME_SECONDS
+        finished = now - self.last_voice >= SILENCE_SECONDS or elapsed >= MAX_UTTERANCE_SECONDS
+        due = finished or now - self.last_partial >= PARTIAL_INTERVAL
+        if due and elapsed >= MIN_UTTERANCE_SECONDS:
+            self.recognise_soon(now, finished)
+
+    async def listen(self) -> None:
+        import sounddevice as sd
+
+        device = sd.query_devices(self.options.device, "input")
+        say(f"Listening on {device['name']} at the cursor")
+        with sd.InputStream(
+            device=device["index"],
+            samplerate=SAMPLE_RATE,
+            channels=device["max_input_channels"],
+            dtype="float32",
+            blocksize=1600,
+            callback=self.on_audio,
+        ):
+            while True:
+                await asyncio.sleep(0.04)
+                while not self.frames.empty():
+                    await self.on_chunk(self.frames.get_nowait())
+
+
+async def run(options: Options) -> None:
+    session = await Session.open(options)
+    await session.listen()
+
+
+def list_devices(value: bool) -> None:
+    """Print input device names as a JSON array, then exit."""
+    if not value:
+        return
+    import sounddevice as sd
+
+    names = [d["name"] for d in sd.query_devices() if d["max_input_channels"] > 0]
+    print(json.dumps(names))
+    raise typer.Exit
 
 
 def serve(
     socket: Annotated[str, typer.Option(help="Neovim listen socket")],
     model: Annotated[str, typer.Option(envvar="VOICECODE_MODEL")] = "openai:gpt-4.1-mini",
     asr_model: Annotated[str, typer.Option(envvar="VOICECODE_ASR_MODEL")] = "base.en",
+    device: Annotated[
+        str | None,
+        typer.Option(envvar="VOICECODE_DEVICE", help="Input device name, or a unique part of it"),
+    ] = None,
+    _list_devices: Annotated[
+        bool,
+        typer.Option(
+            "--list-devices", callback=list_devices, is_eager=True, help="List input devices"
+        ),
+    ] = False,
 ) -> None:
     """Live ASR and code editing with one owner of Neovim buffer mutations."""
     try:
-        asyncio.run(run(socket, model, asr_model))
+        asyncio.run(run(Options(socket, model, asr_model, device)))
+    except UserError as exc:
+        say(f"Cannot start model {model}: {str(exc).split('. ')[0]}", "error")
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        say(f"Cannot open input device {device!r}: {exc}", "error")
+        raise typer.Exit(1) from None
     except KeyboardInterrupt:
-        pass
+        raise typer.Exit(130) from None
 
 
 def main() -> None:

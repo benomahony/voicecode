@@ -1,18 +1,16 @@
 from collections.abc import Iterable
+from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt
 
-class Segment:
+class Segment(Protocol):
     text: str
 
-class TranscriptionInfo:
+class TranscriptionInfo(Protocol):
     language: str
 
-class WhisperModel:
-    def __init__(
-        self, model_size_or_path: str, device: str = ..., compute_type: str = ...
-    ) -> None: ...
+class _WhisperModel(Protocol):
     def transcribe(
         self,
         audio: npt.NDArray[np.float32],
@@ -21,3 +19,10 @@ class WhisperModel:
         condition_on_previous_text: bool = ...,
         vad_filter: bool = ...,
     ) -> tuple[Iterable[Segment], TranscriptionInfo]: ...
+
+class _WhisperModelClass(Protocol):
+    def __call__(
+        self, model_size_or_path: str, device: str = ..., compute_type: str = ...
+    ) -> _WhisperModel: ...
+
+WhisperModel: _WhisperModelClass

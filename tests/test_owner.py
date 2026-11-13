@@ -1,4 +1,6 @@
-from voicecode.main import BufferOwner
+import numpy as np
+
+from voicecode.main import BufferOwner, downmix
 
 
 class FakeEditor:
@@ -16,16 +18,16 @@ class FakeEditor:
     def read(self, buffer: int) -> str:
         return self.buffers[buffer]
 
-    def splice(self, buffer: int, start: int, end: int, text: str) -> None:
+    def splice(self, buffer: int, span: range, text: str) -> None:
         content = self.buffers[buffer]
-        self.buffers[buffer] = content[:start] + text + content[end:]
+        self.buffers[buffer] = content[: span.start] + text + content[span.stop :]
 
     def place_cursor(self, buffer: int, offset: int) -> None:
         if buffer == self.active:
             self.cursor = offset
 
     def type(self, offset: int, text: str) -> None:
-        self.splice(self.active, offset, offset, text)
+        self.splice(self.active, range(offset, offset), text)
 
 
 def test_speech_is_inserted_at_cursor_not_end_of_buffer() -> None:
@@ -139,3 +141,13 @@ def test_moved_cursor_is_left_alone_by_code_edit() -> None:
     assert editor.cursor == 0
     owner.partial("make x one now")
     assert editor.read(1) == "now z = 0\nx = 1"
+
+
+def test_downmix_hears_any_channel_of_an_aggregate_device() -> None:
+    frames = np.zeros((4, 3), dtype=np.float32)
+    frames[:, 2] = 0.5  # meeting audio on the third channel, mic silent
+    frames[0, :] = 0.9  # everyone at once clips instead of wrapping
+    mixed = downmix(frames)
+    assert mixed.shape == (4,)
+    assert mixed.dtype == np.float32
+    assert list(mixed) == [1.0, 0.5, 0.5, 0.5]

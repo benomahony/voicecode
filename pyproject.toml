@@ -10,6 +10,7 @@ dependencies = [
     "pynvim>=0.5",
     "pydantic-ai>=1",
     "typer>=0.29.1",
+    "rich>=15.0.0",
 ]
 
 [project.scripts]

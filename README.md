@@ -34,6 +34,8 @@ from `uv.lock` on first start.
 | `:VoicecodeToggle` | Toggle listening |
 | `:VoicecodeStart` / `:VoicecodeStop` | Start or stop listening |
 | `<Plug>(voicecode-toggle)` | Toggle, for your own mapping |
+| `:VoicecodeLog` | Open the backend log |
+| `:VoicecodeDevice [name]` | Choose the input device (picker without a name) |
 
 The default keymap is only created when the key is unmapped. Change or disable it
 before the plugin loads:
@@ -42,11 +44,54 @@ before the plugin loads:
 vim.g.voicecode_keymap = "<leader>v" -- or false to disable
 ```
 
+Notifications are limited to start, stop and errors. Everything else the backend
+prints, including dependency installation and model downloads, goes to
+`stdpath("log")/voicecode.log`, which `:VoicecodeLog` opens.
+
 To override the backend command, set
 `vim.g.voicecode_cmd = { "/path/to/voicecode" }`.
 
-Set `OPENAI_API_KEY` for the default `openai:gpt-4.1-mini` Pydantic AI model.
-`VOICECODE_MODEL` can select another Pydantic AI model. `VOICECODE_ASR_MODEL`
+### Input device
+
+Voicecode listens to the system default input unless told otherwise. Pick another
+with `:VoicecodeDevice` (a picker, or `:VoicecodeDevice Shure` with completion); a
+running session restarts on the new device. To set it up front, use
+`vim.g.voicecode_device = "Shure"` or `VOICECODE_DEVICE`. Any unique part of the
+name works. `voicecode --list-devices` prints what is available.
+
+Every channel of the device is mixed to mono, so multi-channel devices work.
+
+#### Pairing and mobbing
+
+To transcribe remote participants as well as the room, route the meeting audio
+into an input and combine it with your microphone (macOS):
+
+1. Install a loopback driver: `brew install blackhole-2ch`.
+2. In Audio MIDI Setup, create a **Multi-Output Device** with your speakers or
+   headphones and BlackHole, and select it as the meeting app's speaker, so you
+   still hear everyone.
+3. Create an **Aggregate Device** with your microphone and BlackHole (enable drift
+   correction on BlackHole).
+4. `:VoicecodeDevice Aggregate`.
+
+Everything said by anyone becomes buffer text, so agree who is driving.
+
+### API key
+
+The default model is `openai:gpt-4.1-mini`. Its key is taken from, in order:
+
+1. `OPENAI_API_KEY` in the environment Neovim was started from.
+2. `vim.g.voicecode_api_key_cmd`, a command that prints the key, for example
+   `{ "security", "find-generic-password", "-s", "openai", "-w" }` or
+   `{ "op", "read", "op://Private/OpenAI/credential" }`.
+3. A hidden prompt on start.
+
+The key is kept for the current Neovim session only and passed to the backend's
+environment; it is never written to disk. If the provider rejects it, the next
+start asks again.
+
+`VOICECODE_MODEL` can select another Pydantic AI model, which reads its own
+provider's environment variable (for example `ANTHROPIC_API_KEY`). `VOICECODE_ASR_MODEL`
 selects the local faster-whisper model (default `base.en`).
 
 Open a Python file, then press `<leader>vc` or run `:VoicecodeStart`. Speak naturally. Your words appear

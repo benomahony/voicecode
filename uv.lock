@@ -2585,6 +2585,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pydantic-ai" },
     { name = "pynvim" },
+    { name = "rich" },
     { name = "sounddevice" },
     { name = "typer" },
 ]
@@ -2602,6 +2603,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2" },
     { name = "pydantic-ai", specifier = ">=1" },
     { name = "pynvim", specifier = ">=0.5" },
+    { name = "rich", specifier = ">=15.0.0" },
     { name = "sounddevice", specifier = ">=0.5" },
     { name = "typer", specifier = ">=0.29.1" },
 ]
