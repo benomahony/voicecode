@@ -277,3 +277,29 @@ def test_indented_python_keeps_its_indentation() -> None:
     owner.start_utterance()
     owner.partial("return y instead")
     assert editor.read(1) == "def f():\n    return x # AI: return y instead", editor.read(1)
+test_a_pause_continues_the_voice_comment_instead_of_opening_another() -> None:
+    editor = python("x = 1\n", cursor=6)
+    owner = BufferOwner(editor)
+    owner.start_utterance()
+    owner.partial("show me where we insert the")
+    owner.start_utterance()
+    owner.partial("comment")
+    assert editor.read(1) == "x = 1\n# AI: show me where we insert the comment", (
+        f"one sentence across a pause must stay one comment: {editor.read(1)!r}"
+    )
+
+
+def test_a_continuation_gets_its_own_comment_once_the_one_it_joined_is_code() -> None:
+    editor = python()
+    owner = BufferOwner(editor)
+    owner.start_utterance()
+    owner.partial("make x one")
+    snapshot = owner.snapshot()
+    assert snapshot is not None, "speech must give a snapshot"
+    owner.start_utterance()
+    owner.partial("and y two")
+    assert editor.read(1) == "# AI: make x one and y two", editor.read(1)
+    assert owner.apply_code(snapshot, "x = 1"), f"edit must rebase over {editor.read(1)!r}"
+    assert editor.read(1) == "x = 1 # AI: and y two", (
+        f"words that joined a comment now turned to code need their own: {editor.read(1)!r}"
+    )

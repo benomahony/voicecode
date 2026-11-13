@@ -66,27 +66,48 @@ def anchor_offset(text: str, cursor: int, comment: tuple[str, str]) -> int:
     return offset
 
 
-def render(words: tuple[str, ...], before: str, after: str, comment: tuple[str, str]) -> str:
-    """Spoken words as buffer text between `before` (the character ahead of them) and
-    `after` (the rest of their line). With a comment opener, a voice comment; a line
-    comment followed by code on its line ends the line, so that code stays code."""
-    assert len(before) <= 1, f"before is one character or none, got {before!r}"
-    assert "\n" not in after, f"after is the rest of one line, got {after!r}"
-    if not words:
-        return ""
+def line_before(text: str, offset: int) -> str:
+    """What precedes `offset` on its line."""
+    assert 0 <= offset <= len(text), f"offset {offset} is outside the {len(text)}-character text"
+    head = text[text.rfind("\n", 0, offset) + 1 : offset]
+    assert "\n" not in head, f"line_before returned more than one line: {head!r}"
+    return head
+
+
+def body(words: tuple[str, ...], comment: tuple[str, str], continuing: bool) -> str:
+    """The spoken words as a voice comment, or bare when there's no comment syntax or they
+    continue a voice comment already open on their line."""
+    assert words, "body() needs words; render() returns nothing for silence"
     opener, closer = comment
     spoken = " ".join(words)
     if closer:
         spoken = spoken.replace(closer, "")  # Speech can't end the comment early.
-    text = spoken
-    if opener:
-        text = f"{opener} {MARK} {spoken}" + (f" {closer}" if closer else "")
-    if before and not before.isspace():
+    if not opener or continuing:
+        return spoken
+    text = f"{opener} {MARK} {spoken}" + (f" {closer}" if closer else "")
+    assert text.startswith(opener), f"voice comment {text!r} must open with {opener!r}"
+    return text
+
+
+def render(words: tuple[str, ...], before: str, after: str, comment: tuple[str, str]) -> str:
+    """Spoken words as buffer text between `before` and `after`, the rest of their line on
+    each side. On a line whose voice comment is already open before them (a line comment),
+    they continue it instead of opening another. A new line comment followed by code on
+    its line ends the line, so that code stays code."""
+    assert "\n" not in before, f"before is the start of one line, got {before!r}"
+    assert "\n" not in after, f"after is the rest of one line, got {after!r}"
+    if not words:
+        return ""
+    opener, closer = comment
+    line_comment = bool(opener) and not closer
+    continuing = line_comment and f"{opener} {MARK}" in before
+    text = body(words, comment, continuing)
+    if before[-1:] and not before[-1:].isspace():
         text = " " + text
-    if opener and not closer and after.strip():
-        text += "\n"
-    elif after[:1] and not after[:1].isspace():
-        text += " "
+    if line_comment and not continuing and after.strip():
+        return text + "\n"
+    if after[:1] and not after[:1].isspace():
+        return text + " "
     return text
 
 
@@ -231,7 +252,7 @@ class BufferOwner:
         assert a.skip >= 0, f"skipping {a.skip} words; skip counts words already placed"
         spoken = tuple(words.split()[a.skip :])
         old_end = a.start + len(a.text)
-        before = self.content[a.start - 1] if a.start else ""
+        before = line_before(self.content, a.start)
         text = render(spoken, before, line_rest(self.content, old_end), a.comment)
         a.text, a.words = text, spoken
         self._write(range(a.start, old_end), text)
@@ -276,14 +297,19 @@ class BufferOwner:
             if a.words[:seen] != snap.words:
                 return False  # The recognizer revised words the model already acted on.
             left = a.words[seen:]
-            before = replacement[new_end - 1 : new_end]
+            before = line_before(replacement, new_end)
             tail = render(left, before, line_rest(replacement, new_end), a.comment)
             a.skip += seen
             a.words, a.text, a.start = left, tail, new_end
         elif a.start >= snap.end and current[: snap.end] == snap.content[: snap.end]:
-            # A later utterance, already rendered after the snapshot's speech.
-            tail = current[snap.end : end]
-            a.start = new_end + a.start - snap.end
+            # A later utterance after the snapshot's speech. Render it again: the comment
+            # it continued may now be code, and then it needs a voice comment of its own.
+            head = replacement[:new_end] + current[snap.end : a.start]
+            a.text = render(
+                a.words, line_before(head, len(head)), line_rest(replacement, new_end), a.comment
+            )
+            tail = current[snap.end : a.start] + a.text
+            a.start = len(head)
         else:
             return False
         moved = self.mark is None or self.editor.current() != self.mark
