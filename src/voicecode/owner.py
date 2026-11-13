@@ -27,7 +27,7 @@ class Editor(Protocol):
     comment: Callable[[int], tuple[str, str]]  # A buffer's comment opener and closer.
 
 
-MARK = "voice:"  # Tags spoken comments, so the model can tell them from real ones.
+MARK = "AI:"  # Tags spoken comments, so the model can tell them from real ones.
 
 
 def line_rest(text: str, offset: int) -> str:

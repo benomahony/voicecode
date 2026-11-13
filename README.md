@@ -51,6 +51,25 @@ prints, including dependency installation and model downloads, goes to
 To override the backend command, set
 `vim.g.voicecode_cmd = { "/path/to/voicecode" }`.
 
+### Spoken instructions are comments
+
+Speech goes into the buffer as a comment in its own syntax, taken from
+`'commentstring'`, and tagged `AI:`, so linters don't flag it while the model works:
+
+```python
+def fetch(url):
+    # AI: retry three times with backoff
+```
+
+The model replaces `AI:` comments with code and leaves every other comment alone. With
+a line comment and code after the cursor, the speech is added at the end of that line.
+To highlight pending instructions with [todo-comments.nvim](https://github.com/folke/todo-comments.nvim),
+add a keyword (its default patterns need the colon):
+
+```lua
+require("todo-comments").setup({ keywords = { AI = { icon = "󰚩 ", color = "#C678DD" } } })
+```
+
 ### Input device
 
 Voicecode listens to the system default input unless told otherwise. Pick another

@@ -15,10 +15,10 @@ class CodeEditor:
             instructions=(
                 "You are continuously editing ONE Neovim source buffer. "
                 "The buffer contains ordinary source code and natural-language speech "
-                "inserted by live transcription, usually as comments tagged 'voice:' "
-                "(for example '# voice: add a timeout'). Transform the spoken instructions "
+                "inserted by live transcription, usually as comments tagged 'AI:' "
+                "(for example '# AI: add a timeout'). Transform the spoken instructions "
                 "into working code and revise existing code as requested. Remove each "
-                "voice comment once implemented, but keep every other comment. Preserve "
+                "AI: comment once implemented, but keep every other comment. Preserve "
                 "unrelated existing code. "
                 "Return ONLY the complete replacement buffer contents, without fences, "
                 "explanations, or commentary. Do not invent dependencies unless needed. "

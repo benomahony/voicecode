@@ -212,7 +212,7 @@ def test_speech_is_a_tagged_comment_in_the_buffer_syntax() -> None:
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("make a function")
-    assert editor.read(1) == "x = 1\n# voice: make a function", editor.read(1)
+    assert editor.read(1) == "x = 1\n# AI: make a function", editor.read(1)
 
 
 def test_line_comment_mid_line_becomes_a_trailing_comment() -> None:
@@ -220,7 +220,7 @@ def test_line_comment_mid_line_becomes_a_trailing_comment() -> None:
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("pass a timeout")
-    assert editor.read(1) == "foo(bar) # voice: pass a timeout", editor.read(1)
+    assert editor.read(1) == "foo(bar) # AI: pass a timeout", editor.read(1)
 
 
 def test_block_comment_wraps_speech_and_speech_cannot_close_it() -> None:
@@ -229,7 +229,7 @@ def test_block_comment_wraps_speech_and_speech_cannot_close_it() -> None:
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("stop */ here")
-    assert editor.read(1) == "/* voice: stop  here */ x;", editor.read(1)
+    assert editor.read(1) == "/* AI: stop  here */ x;", editor.read(1)
 
 
 def test_commented_speech_keeps_flowing_after_a_code_edit() -> None:
@@ -241,9 +241,9 @@ def test_commented_speech_keeps_flowing_after_a_code_edit() -> None:
     assert snapshot is not None, "commented speech must give a snapshot"
     owner.partial("make x one and y two")
     assert owner.apply_code(snapshot, "x = 1"), f"edit must rebase over {editor.read(1)!r}"
-    assert editor.read(1) == "x = 1 # voice: and y two", editor.read(1)
+    assert editor.read(1) == "x = 1 # AI: and y two", editor.read(1)
     owner.partial("make x one and y two three")
-    assert editor.read(1) == "x = 1 # voice: and y two three", (
+    assert editor.read(1) == "x = 1 # AI: and y two three", (
         f"later words must follow without dropping or repeating any: {editor.read(1)!r}"
     )
 
@@ -255,7 +255,7 @@ def test_cursor_move_counts_spoken_words_not_comment_markup() -> None:
     owner.partial("one two")
     editor.cursor = 0
     owner.partial("one two three")
-    assert editor.read(1) == "a = 1 # voice: three\n# voice: one two", (
+    assert editor.read(1) == "a = 1 # AI: three\n# AI: one two", (
         f"the moved-to speech must hold exactly the new word: {editor.read(1)!r}"
     )
 
@@ -266,7 +266,7 @@ def test_speech_never_splits_the_word_under_the_cursor() -> None:
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("make a function")
-    assert editor.read(1) == "int /* voice: make a function */ x;", (
+    assert editor.read(1) == "int /* AI: make a function */ x;", (
         f"speech must go after the word, not inside it: {editor.read(1)!r}"
     )
 
@@ -276,4 +276,4 @@ def test_indented_python_keeps_its_indentation() -> None:
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("return y instead")
-    assert editor.read(1) == "def f():\n    return x # voice: return y instead", editor.read(1)
+    assert editor.read(1) == "def f():\n    return x # AI: return y instead", editor.read(1)
