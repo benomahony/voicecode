@@ -56,6 +56,17 @@ prints, including dependency installation and model downloads, goes to
 To override the backend command, set
 `vim.g.voicecode_cmd = { "/path/to/voicecode" }`.
 
+### Referring to other code
+
+The coding model can search the rest of the repository while it edits. Say
+"retry this like the downloader does" and it looks up the matching code through
+code-chat's index, then uses the real helper, imports and signatures instead of
+guessing. Searches go through code-chat's background daemon, which shares one
+loaded EmbeddingGemma 2 with `:CodeChat`. The first search after a restart waits
+for the model to load; after that a search takes a fraction of a second. If the
+daemon is busy for 30 s (for example a `:CodeChat` window is open) or the buffer
+isn't in a git repository, the model carries on without searching.
+
 ### Input device
 
 Voicecode listens to the system default input unless told otherwise. Pick another
@@ -192,6 +203,7 @@ For a live integration like the Neovim plugin, run `code-chat serve [ROOT]` and 
 | --- | --- |
 | In | `{"type": "listen"}`, `{"type": "stop"}` |
 | In | `{"type": "update", "file": "/abs/path"}` after a save, to re-index that file |
+| In | `{"type": "search", "text": "retry a failed download"}` to rank by a written description; answered with one final `results` |
 | In | `{"type": "exit"}`, or close stdin |
 | Out | `{"type": "status", "text": "Loading EmbeddingGemma 2…"}` while starting |
 | Out | `{"type": "ready", "chunks": 1234}` |

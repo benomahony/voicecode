@@ -38,6 +38,7 @@ class Command(TypedDict):
     file: NotRequired[str]
     root: NotRequired[str]
     fingerprint: NotRequired[str]
+    text: NotRequired[str]
 
 
 COMMAND = TypeAdapter(Command)
@@ -95,6 +96,7 @@ class Daemon:
             "listen": self.listen,
             "stop": self.stop,
             "update": self.update,
+            "search": self.lookup,
         }
 
     def current(self) -> voice.Session | None:
@@ -279,6 +281,19 @@ class Daemon:
         # Saves outside the repository don't change its index.
         if file.is_relative_to(self.root) and file != self.root:
             self.index.update(str(file.relative_to(self.root)))
+
+    def lookup(self, command: Command):
+        """Rank the code against a written description, alongside any voice search."""
+        assert command["type"] == "search", (
+            f"lookup() got a {command['type']} command; dispatch through self.handlers"
+        )
+        assert self.index is not None, "lookup() needs the index; it's built in serve()"
+        text = command.get("text", "").strip()
+        if not text:
+            self.send({"type": "status", "text": 'Send {"type": "search", "text": "..."}'})
+            return
+        ranked = self.index.spoken(search.embed_text(text))
+        self.send({"type": "results", "final": True, "seconds": 0, "hits": self.index.hits(ranked)})
 
     def tick(self, session: voice.Session, index: search.Index):
         """Report the level, re-rank when there's new speech, finish once

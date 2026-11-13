@@ -28,9 +28,12 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from types import FrameType
-from typing import NoReturn, TextIO
+from typing import Literal, NoReturn, TextIO, TypedDict
+
+from pydantic import TypeAdapter
 
 from code_chat import index as search
 from code_chat import server
@@ -229,17 +232,19 @@ def running() -> bool:
     return False
 
 
-def connect(root: Path) -> tuple[socket.socket, TextIO]:
+def connect(root: Path, timeout: float | None = None) -> tuple[socket.socket, TextIO]:
     """A connection to a daemon running this code, opened on `root`, and the
     stream of its messages. Starts a daemon if none is taking connections;
     one running older code restarts itself when it sees this code's
-    fingerprint, and the next attempt starts a fresh one."""
+    fingerprint, and the next attempt starts a fresh one. With `timeout`, any
+    wait on the socket longer than that raises TimeoutError."""
     assert root.is_absolute(), f"repository root {root} must be absolute; resolve() it first"
     assert root.is_dir(), f"{root} isn't a directory; pass the repository to search"
     opening = json.dumps({"type": "open", "root": str(root), "fingerprint": fingerprint()}) + "\n"
     needs_start = True
     for _ in range(WAIT_ATTEMPTS):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(timeout)
         try:
             connection.connect(str(SOCKET))
         except (FileNotFoundError, ConnectionRefusedError):
@@ -261,6 +266,38 @@ def connect(root: Path) -> tuple[socket.socket, TextIO]:
         needs_start = True
         time.sleep(WAIT)
     raise SystemExit(f"code-chat: no daemon started within {WAIT_ATTEMPTS * WAIT:.0f} s; see {LOG}")
+
+
+class Results(TypedDict):
+    type: Literal["results"]
+    hits: list[search.Hit]
+
+
+RESULTS = TypeAdapter(Results)
+
+
+def read_results(messages: Iterable[str]) -> list[search.Hit]:
+    """The hits from the first results message, skipping status and ready."""
+    for line in messages:
+        if server.parse(line)["type"] == "results":
+            hits = RESULTS.validate_json(line)["hits"]
+            assert all(h["start"] <= h["end"] for h in hits), f"a hit ends before it starts: {hits}"
+            assert hits == sorted(hits, key=lambda h: -h["score"]), "hits must come best first"
+            return hits
+    raise ConnectionError("the code-chat daemon hung up before sending results; see " + str(LOG))
+
+
+def search_text(root: Path, text: str, timeout: float) -> list[search.Hit]:
+    """Rank `root`'s code against a written description, through the shared daemon,
+    so the model loads once. Raises TimeoutError if the daemon is busy for longer."""
+    assert root.is_absolute(), f"repository root {root} must be absolute; resolve() it first"
+    assert text.strip() and timeout > 0, (
+        f"search_text needs a description and a timeout > 0, got {text!r}, {timeout}"
+    )
+    connection, messages = connect(root, timeout)
+    with connection, messages:
+        connection.sendall((json.dumps({"type": "search", "text": text}) + "\n").encode())
+        return read_results(messages)
 
 
 def start():

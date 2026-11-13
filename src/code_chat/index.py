@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, TypedDict, cast, final
 import numpy as np
 import numpy.typing as npt
 
-from code_chat.chunks import Chunk, files, split, wanted
+from code_chat.chunks import Chunk, files, plain, split, wanted
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -29,6 +29,8 @@ DIMS = 768
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "code-chat"
 LIMIT = 30
 SMOOTHING = 0.4  # Weight of the newest update.
+# EmbeddingGemma's prompt for finding code from a description of it.
+QUERY = "task: code retrieval | query: "
 
 
 class Hit(TypedDict):
@@ -101,6 +103,14 @@ def embed(inputs: Sequence[str | dict[str, npt.NDArray[np.float32]]]) -> Vectors
         f"embedded {len(inputs)} inputs into shape {vectors.shape}; check the model is {MODEL}"
     )
     return vectors
+
+
+def embed_text(description: str) -> Vectors:
+    """A written description of code, embedded to rank chunks like speech is."""
+    assert description.strip(), "there's nothing to search for; describe the code first"
+    vector = embed([plain(QUERY + description.strip())])[0, :]
+    assert vector.shape == (DIMS,), f"embedded the description into shape {vector.shape}"
+    return vector
 
 
 def embed_audio(audio: npt.NDArray[np.float32]) -> Vectors:
