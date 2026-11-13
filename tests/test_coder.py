@@ -2,7 +2,7 @@ import asyncio
 
 from pydantic_ai.models.test import TestModel
 
-from voicecode.coder import WINDOW_LINES, CodeEditor, window
+from voicecode.coder import WINDOW_LINES, CodeEditor, resembles, unfenced, window
 
 LINES = [f"line {n}" for n in range(100)]
 CONTENT = "\n".join(LINES)
@@ -28,12 +28,23 @@ def test_only_the_window_changes_and_the_rest_of_the_buffer_is_kept() -> None:
     content = CONTENT.replace("line 50", "# AI: make line 50 shout")
     start = content.index("# AI:")
     coder = CodeEditor("test")
-    rewritten = TestModel(custom_output_args={"region": "LINE 50"})
+    rewritten = TestModel(custom_output_text="line 49\nLINE 50\nline 51")
     with coder.agent.override(model=rewritten):
         out = asyncio.run(coder.transform(content, "a.py", range(start, start + 24)))
     lines = out.split("\n")
     assert lines[:30] == LINES[:30], f"lines above the window must be untouched: {lines[:30]}"
-    assert lines[30] == "LINE 50", (
-        f"the window must be replaced by the model's region: {lines[30]!r}"
+    assert lines[30:33] == ["line 49", "LINE 50", "line 51"], f"window not replaced: {lines[30:33]}"
+    assert lines[33:] == LINES[71:], f"lines below the window must be untouched: {lines[33:]}"
+
+
+def test_a_fenced_region_loses_its_fence() -> None:
+    assert unfenced("```python\nx = 1\n```") == "x = 1", "the fence must not reach the buffer"
+    assert unfenced("x = 1") == "x = 1", "an unfenced region must come back unchanged"
+
+
+def test_prose_is_not_taken_for_the_region() -> None:
+    region = "def f():\n    # AI: return two\n    return 1"
+    assert not resembles("Sure! Here is the updated function.", region), (
+        f"prose replaced {region!r}"
     )
-    assert lines[31:] == LINES[71:], f"lines below the window must be untouched: {lines[31:]}"
+    assert resembles("def f():\n    return 2", region), f"a rewrite of {region!r} shares lines"

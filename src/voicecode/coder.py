@@ -5,15 +5,33 @@ speech: output tokens are what make a model slow, and a window is a small fracti
 a file.
 """
 
-from pydantic import BaseModel
+from pydantic_ai.models.openai import OpenAIChatModelSettings
 
 WINDOW_LINES = 20  # Lines kept on each side of the speech in the region the model rewrites.
+FENCE = "```"
 
 
-class Edit(BaseModel):
-    """The region, rewritten as the spoken instructions ask."""
+def unfenced(text: str) -> str:
+    """The model's region without a Markdown code fence around it, if it added one."""
+    lines = text.strip("\n").split("\n")
+    fenced = len(lines) >= 2 and lines[0].startswith(FENCE) and lines[-1].strip() == FENCE
+    if fenced:
+        lines = lines[1:-1]
+    out = "\n".join(lines)
+    assert len(out) <= len(text), f"unfencing grew {len(text)} characters to {len(out)}"
+    assert not fenced or not out.endswith(FENCE), f"left the closing fence in {out[-60:]!r}"
+    return out
 
-    region: str  # The complete new text of the region, without fences or commentary.
+
+def resembles(rewritten: str, region: str) -> bool:
+    """Whether a rewritten region still shares a line with the original; a reply with
+    none is prose, not the region, and must not replace code."""
+    kept = {stripped for stripped in map(str.strip, region.split("\n")) if stripped}
+    new = set(map(str.strip, rewritten.split("\n")))
+    shared = bool(kept & new)
+    assert kept or not shared, f"shared {kept & new} with an empty region"
+    assert not shared or rewritten.strip(), f"empty rewrite {rewritten!r} shared {kept & new}"
+    return shared or not kept
 
 
 def window(content: str, speech: range) -> range:
@@ -35,16 +53,18 @@ def window(content: str, speech: range) -> range:
 
 class CodeEditor:
     def __init__(self, model: str) -> None:
-        from pydantic_ai import Agent, ToolOutput
+        from pydantic_ai import Agent
 
         assert model, "no coding model named; set --model or VOICECODE_MODEL"
         assert model == model.strip(), (
             f"coding model {model!r} has surrounding whitespace; check VOICECODE_MODEL"
         )
-        self.agent: Agent[None, Edit] = Agent(
+        # Plain text, not a tool call, so OpenAI's predicted outputs can stream back the
+        # unchanged lines of the region almost for free; tools would rule that out.
+        self.predict: bool = model.startswith("openai:")
+        self.agent: Agent[None, str] = Agent(
             model,
-            # A tool and no free text, so prose can't be mistaken for code.
-            output_type=ToolOutput(Edit, name="edit_region", description=Edit.__doc__),
+            output_type=str,
             instructions=(
                 "You are continuously editing ONE Neovim source buffer. "
                 "The buffer contains ordinary source code and natural-language speech "
@@ -53,8 +73,9 @@ class CodeEditor:
                 "into working code and revise existing code as requested. Remove each "
                 "AI: comment once implemented, but keep every other comment. "
                 "You are shown the whole buffer for context and one region of it, which "
-                "holds the speech. Answer with edit_region: the complete new text of that "
-                "region only, preserving its unrelated lines exactly. Do not invent "
+                "holds the speech. Answer with ONLY the complete new text of that region: "
+                "no fences, explanations or commentary, and its unrelated lines exactly as "
+                "they were. Do not invent "
                 "dependencies unless needed. If instructions are incomplete, preserve them "
                 "until they can be implemented."
             ),
@@ -74,6 +95,11 @@ class CodeEditor:
                 f"<region>\n{content[region.start : region.stop]}\n</region>",
             ]
         )
-        edit = (await self.agent.run(prompt)).output
-        rewritten = edit.region.strip("\n")
+        original = content[region.start : region.stop]
+        settings: OpenAIChatModelSettings = (
+            {"openai_prediction": {"type": "content", "content": original}} if self.predict else {}
+        )
+        rewritten = unfenced((await self.agent.run(prompt, model_settings=settings)).output)
+        if not resembles(rewritten, original):
+            return ""  # Prose: an empty edit, which apply_code refuses.
         return content[: region.start] + rewritten + content[region.stop :]
