@@ -195,6 +195,7 @@ class BufferOwner:
         comment = editor.comment(buffer)
         self.anchor: Anchor = Anchor(buffer, anchor_offset(content, offset, comment), comment)
         self.content: str = content
+        self.rejected: str = ""  # Why the last refused edit was refused.
         self.mark: tuple[int, int] | None = (
             None  # None: anchor at the cursor on the next utterance.
         )
@@ -302,6 +303,13 @@ class BufferOwner:
         )
         return Snapshot(a.buffer, self.content, a.start, end, a.words)
 
+    def _reject(self, reason: str) -> bool:
+        """Record why an edit was refused, for the log, and refuse it."""
+        assert reason, "say why the edit was refused"
+        self.rejected = reason
+        assert not reason.endswith("."), f"{reason!r} is read mid-sentence in the log"
+        return False
+
     def apply_code(self, snap: Snapshot, replacement: str) -> bool:
         """Rebase a model edit onto speech appended since `snap`; reject anything else."""
         assert 0 <= snap.end <= len(snap.content), (
@@ -310,20 +318,24 @@ class BufferOwner:
         )
         a = self.anchor
         replacement = replacement.rstrip("\n")
-        if not replacement.strip() or a.buffer != snap.buffer or self._edited():
-            return False
+        if not replacement.strip():
+            return self._reject("the model returned nothing")
+        if a.buffer != snap.buffer:
+            return self._reject("speech moved to another buffer")
+        if self._edited():
+            return self._reject("the buffer was edited by hand")
         end = a.start + len(a.text)
         current = self.content
         if current[end:] != snap.content[snap.end :]:
-            return False
+            return self._reject("the text after the speech changed")
         new_end = map_offset(snap.content, replacement, snap.end)
         if a.start == snap.start:
             # Same utterance: the speech may have grown, so compare words, not text.
             if current[: a.start] != snap.content[: snap.start]:
-                return False
+                return self._reject("the text before the speech changed")
             kept = agreed(a.words, snap.words)
             if kept is None:
-                return False  # The recognizer revised words the model already acted on.
+                return self._reject(f"the recognizer revised {' '.join(snap.words)!r}")
             left = a.words[kept:]  # Revised trailing words come back after the code.
             before = line_before(replacement, new_end)
             tail = render(left, before, line_rest(replacement, new_end), a.comment)
@@ -339,7 +351,7 @@ class BufferOwner:
             tail = current[snap.end : a.start] + a.text
             a.start = len(head)
         else:
-            return False
+            return self._reject("the speech was re-anchored, e.g. after a cursor move")
         moved = self.mark is None or self.editor.current() != self.mark
         result = replacement[:new_end] + tail + replacement[new_end:]
         prefix = len(os.path.commonprefix([current, result]))

@@ -127,9 +127,14 @@ class Session:
             self.last_sent = snapshot.content
             filename = await self.writer.call(partial(self.editor.name, snapshot.buffer))
             speech = range(snapshot.start, snapshot.end)
+            asked = time.monotonic()
             replacement = await self.coder.transform(snapshot.content, filename, speech)
-            if not await self.writer.call(partial(self.owner.apply_code, snapshot, replacement)):
-                print("Stale edit discarded", file=sys.stderr, flush=True)
+            took = time.monotonic() - asked
+            if await self.writer.call(partial(self.owner.apply_code, snapshot, replacement)):
+                print(f"Edit applied; the model took {took:.1f}s", file=sys.stderr, flush=True)
+            else:
+                reason = self.owner.rejected
+                print(f"Edit discarded after {took:.1f}s: {reason}", file=sys.stderr, flush=True)
         except ModelAuthenticationError as exc:
             say(f"The model provider rejected the API key: {exc}", "auth")
         except (RuntimeError, NvimError) as exc:
