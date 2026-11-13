@@ -72,7 +72,9 @@ def serve_forever():
     """Serve searches until IDLE seconds pass with no one connecting, or
     exit straight away if another daemon is already serving."""
     path = str(SOCKET).encode()
-    assert len(path) < MAX_SOCKET_PATH, f"socket path {SOCKET} is {len(path)} bytes, over macOS's {MAX_SOCKET_PATH}; set a shorter XDG_CACHE_HOME"
+    assert len(path) < MAX_SOCKET_PATH, (
+        f"socket path {SOCKET} is {len(path)} bytes, over macOS's {MAX_SOCKET_PATH}; set a shorter XDG_CACHE_HOME"
+    )
     search.CACHE.mkdir(parents=True, exist_ok=True)
     with LOCK.open("a+") as lock:
         try:
@@ -81,30 +83,36 @@ def serve_forever():
             # Another daemon took the lock first; it serves, this one doesn't.
             return
         # Exit through the finally below on `code-chat stop`, too.
-        signal.signal(signal.SIGTERM, exit_cleanly)
+        _ = signal.signal(signal.SIGTERM, exit_cleanly)
         try:
-            server.protect_stdout()
+            _ = server.protect_stdout()
             claim(lock)
             listen_until_idle()
         finally:
             SOCKET.unlink(missing_ok=True)
-            lock.truncate(0)
+            _ = lock.truncate(0)
     assert not SOCKET.exists(), f"{SOCKET} outlived the daemon; delete it"
 
 
 def exit_cleanly(signum: int, frame: FrameType | None) -> NoReturn:
     """On SIGTERM, exit through serve_forever()'s cleanup rather than dying."""
-    assert signum == signal.SIGTERM, f"exit_cleanly() handles SIGTERM, got signal {signum}; register it for SIGTERM only"
-    assert frame is None or frame.f_code.co_filename, "the interrupted frame has no file; Python passes the frame it interrupted"
+    assert signum == signal.SIGTERM, (
+        f"exit_cleanly() handles SIGTERM, got signal {signum}; register it for SIGTERM only"
+    )
+    assert frame is None or frame.f_code.co_filename, (
+        "the interrupted frame has no file; Python passes the frame it interrupted"
+    )
     raise SystemExit(0)
 
 
 def claim(lock: TextIO):
     """Record this daemon in the lock file it holds."""
-    assert lock.writable(), f"{LOCK} must be open for writing to record the daemon in it; open it with 'a+'"
-    lock.seek(0)
-    lock.truncate()
-    lock.write(f"{os.getpid()} {STARTED_WITH}")
+    assert lock.writable(), (
+        f"{LOCK} must be open for writing to record the daemon in it; open it with 'a+'"
+    )
+    _ = lock.seek(0)
+    _ = lock.truncate()
+    _ = lock.write(f"{os.getpid()} {STARTED_WITH}")
     lock.flush()
     assert lock.tell() > 0, f"wrote nothing to {LOCK}; check {search.CACHE} has free space"
 
@@ -112,7 +120,9 @@ def claim(lock: TextIO):
 def listen_until_idle():
     """Accept searches one at a time until IDLE seconds pass without one.
     Called holding the lock, so a socket left behind is a dead daemon's."""
-    assert search.CACHE.is_dir(), f"{search.CACHE} is gone; serve_forever() creates it before listening"
+    assert search.CACHE.is_dir(), (
+        f"{search.CACHE} is gone; serve_forever() creates it before listening"
+    )
     assert LOCK.stat().st_size > 0, f"{LOCK} names no daemon; claim() it before listening"
     SOCKET.unlink(missing_ok=True)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
@@ -122,7 +132,7 @@ def listen_until_idle():
         idle = False
         while not idle:
             try:
-                connection, _ = listener.accept()
+                connection = listener.accept()[0]
             except TimeoutError:
                 idle = True
                 continue
@@ -133,19 +143,30 @@ def listen_until_idle():
 def serve_connection(connection: socket.socket):
     """One search, from its opening message until the client hangs up; or a
     shutdown, or a restart when the client runs newer code than this daemon."""
-    assert connection.family == socket.AF_UNIX, f"connections come over a Unix socket, got family {connection.family}; connect to {SOCKET}"
-    assert SOCKET.exists(), f"serving a connection though {SOCKET} is gone; only listen_until_idle() should accept them"
+    assert connection.family == socket.AF_UNIX, (
+        f"connections come over a Unix socket, got family {connection.family}; connect to {SOCKET}"
+    )
+    assert SOCKET.exists(), (
+        f"serving a connection though {SOCKET} is gone; only listen_until_idle() should accept them"
+    )
     connection.settimeout(None)
     # The socket only really closes once these do too, and the client waits
     # for that to know the search is over.
-    with connection.makefile("r", encoding="utf-8") as reader, connection.makefile("w", encoding="utf-8") as writer:
+    with (
+        connection.makefile("r", encoding="utf-8") as reader,
+        connection.makefile("w", encoding="utf-8") as writer,
+    ):
         answer(line=reader.readline(), reader=reader, writer=writer)
 
 
 def answer(line: str, reader: TextIO, writer: TextIO):
     """Act on a connection's opening line."""
-    assert reader.readable() and writer.writable(), f"answer() needs the connection's read and write sides, got {reader} and {writer}"
-    assert "\n" not in line.rstrip("\n"), f"answer() takes the opening line alone, got {line[:80]!r}; pass one readline()"
+    assert reader.readable() and writer.writable(), (
+        f"answer() needs the connection's read and write sides, got {reader} and {writer}"
+    )
+    assert "\n" not in line.rstrip("\n"), (
+        f"answer() takes the opening line alone, got {line[:80]!r}; pass one readline()"
+    )
     # A client that hangs up without a word.
     if not line:
         return
@@ -165,15 +186,23 @@ def answer(line: str, reader: TextIO, writer: TextIO):
         reply(writer, {"type": "opened"})
         server.Daemon(root, writer).serve(reader)
         return
-    reply(writer, {"type": "status", "text": f"Start with {{\"type\": \"open\", \"root\": \"/repo\", \"fingerprint\": \"...\"}}, not {line[:80]!r}"})
+    reply(
+        writer,
+        {
+            "type": "status",
+            "text": f'Start with {{"type": "open", "root": "/repo", "fingerprint": "..."}}, not {line[:80]!r}',
+        },
+    )
 
 
 def reply(writer: TextIO, message: dict[str, str]):
     """Answer a client's opening message, unless it has already hung up."""
     assert message.get("type"), f"reply {message} has no type; clients dispatch on it"
-    assert writer.writable(), f"replying on a stream that isn't writable ({writer}); pass the connection's write side"
+    assert writer.writable(), (
+        f"replying on a stream that isn't writable ({writer}); pass the connection's write side"
+    )
     try:
-        writer.write(json.dumps(message) + "\n")
+        _ = writer.write(json.dumps(message) + "\n")
         writer.flush()
     except (BrokenPipeError, ConnectionResetError):
         # It hung up before hearing back; there's no one left to tell.
@@ -223,7 +252,8 @@ def connect(root: Path) -> tuple[socket.socket, TextIO]:
             continue
         connection.sendall(opening.encode())
         messages = connection.makefile("r", encoding="utf-8")
-        if json.loads(messages.readline() or "{}").get("type") == "opened":
+        reply = messages.readline()
+        if reply and server.parse(reply)["type"] == "opened":
             return connection, messages
         # It's restarting for newer code, or was exiting anyway.
         messages.close()
@@ -256,7 +286,9 @@ def stop() -> bool:
     can receive the request. True if one was running. A daemon serving a
     search reads the request once that search ends."""
     path = str(SOCKET).encode()
-    assert len(path) < MAX_SOCKET_PATH, f"socket path {SOCKET} is {len(path)} bytes, over macOS's {MAX_SOCKET_PATH}; set a shorter XDG_CACHE_HOME"
+    assert len(path) < MAX_SOCKET_PATH, (
+        f"socket path {SOCKET} is {len(path)} bytes, over macOS's {MAX_SOCKET_PATH}; set a shorter XDG_CACHE_HOME"
+    )
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     with connection:
         try:
@@ -269,7 +301,11 @@ def stop() -> bool:
             break
         time.sleep(WAIT)
     else:
-        raise SystemExit(f"code-chat: the daemon is still busy after {WAIT_ATTEMPTS * WAIT:.0f} s; finish its search and try again")
+        raise SystemExit(
+            f"code-chat: the daemon is still busy after {WAIT_ATTEMPTS * WAIT:.0f} s; finish its search and try again"
+        )
     # It removes its socket before letting go of the lock.
-    assert not SOCKET.exists(), f"the daemon exited without removing {SOCKET}; delete it, and check {LOG}"
+    assert not SOCKET.exists(), (
+        f"the daemon exited without removing {SOCKET}; delete it, and check {LOG}"
+    )
     return True
