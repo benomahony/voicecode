@@ -126,7 +126,8 @@ class Session:
             )
             self.last_sent = snapshot.content
             filename = await self.writer.call(partial(self.editor.name, snapshot.buffer))
-            replacement = await self.coder.transform(snapshot.content, filename)
+            speech = range(snapshot.start, snapshot.end)
+            replacement = await self.coder.transform(snapshot.content, filename, speech)
             if not await self.writer.call(partial(self.owner.apply_code, snapshot, replacement)):
                 print("Stale edit discarded", file=sys.stderr, flush=True)
         except ModelAuthenticationError as exc:
