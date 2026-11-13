@@ -5,22 +5,23 @@ speech appended since they were requested and rejected on any other change.
 """
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Protocol
 
 
 class Editor(Protocol):
-    """Buffer text is lines joined by "\\n"; offsets are character indices into it."""
+    """Buffer text is lines joined by "\\n"; offsets are character indices into it.
 
-    def current(self) -> tuple[int, int]:
-        """Active buffer and the insertion offset at its cursor."""
-        ...
+    Members are declared as callables; any class with methods of these signatures fits.
+    """
 
-    def name(self, buffer: int) -> str: ...
-    def read(self, buffer: int) -> str: ...
-    def splice(self, buffer: int, span: range, text: str) -> None: ...
-    def place_cursor(self, buffer: int, offset: int) -> None: ...
+    current: Callable[[], tuple[int, int]]  # Active buffer and insertion offset at its cursor.
+    name: Callable[[int], str]  # File name of a buffer, for the model's prompt.
+    read: Callable[[int], str]  # Whole text of a buffer.
+    splice: Callable[[int, range, str], None]  # Replace a character span of a buffer.
+    place_cursor: Callable[[int, int], None]  # Move the cursor, if that buffer is active.
 
 
 @dataclass
