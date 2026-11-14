@@ -1,6 +1,8 @@
 import asyncio
 
 import pytest
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from voicecode.coder import (
@@ -69,3 +71,46 @@ def test_a_reply_without_blocks_changes_nothing_and_says_why() -> None:
 def test_echoed_lines_are_the_unchanged_ones_a_reply_repeats() -> None:
     edits = [Change("    a = 1\n    # AI: double b\n    b = 2", "    a = 1\n    b = 4")]
     assert echoed(edits) == ["    a = 1"], f"only the unchanged line is an echo: {echoed(edits)}"
+
+
+def test_the_second_edit_sees_the_first_exchange_but_not_its_old_buffer() -> None:
+    """An edit continues the file's conversation, so the model sees the start of a
+    sentence it already acted on, without paying for an out-of-date copy of the file."""
+    seen: list[list[ModelMessage]] = []
+
+    def answer(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        return ModelResponse(
+            parts=[TextPart(block("    return 1\n\ndef g():", "    return 2\n\ndef g():"))]
+        )
+
+    coder = CodeEditor("test")
+    with coder.agent.override(model=FunctionModel(answer)):
+        _ = asyncio.run(coder.transform(BUFFER, "a.py", PYTHON))
+        _ = asyncio.run(coder.transform(BUFFER, "a.py", PYTHON))
+    second = seen[-1]
+    prompts = [
+        p.content
+        for m in second
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, UserPromptPart)
+    ]
+    assert len(prompts) == 2, (
+        f"the second edit must see the first request too: {len(prompts)} prompts"
+    )
+    assert BUFFER not in str(prompts[0]), f"the first request's old buffer must go: {prompts[0]!r}"
+    assert BUFFER in str(prompts[-1]), f"the newest request needs the buffer: {prompts[-1]!r}"
+    assert any(isinstance(m, ModelResponse) for m in second), (
+        "the model's earlier reply must be there"
+    )
+
+
+def test_history_is_kept_per_file() -> None:
+    coder = CodeEditor("test")
+    with coder.agent.override(model=TestModel(custom_output_text="no change")):
+        _ = asyncio.run(coder.transform(BUFFER, "a.py", PYTHON))
+        _ = asyncio.run(coder.transform(BUFFER, "b.py", PYTHON))
+    assert set(coder.conversations) == {"a.py", "b.py"}, (
+        f"one conversation per file: {coder.conversations}"
+    )

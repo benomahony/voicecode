@@ -6,10 +6,12 @@ slow, and a spoken edit changes a few lines of a file.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
+from pydantic_ai import Conversation
 from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.openai import OpenAIChatModelSettings
 
 MODEL = "openai:gpt-6-luna"  # The default; VOICECODE_MODEL picks another.
@@ -67,9 +69,44 @@ def apply(content: str, edits: list[Change]) -> str:
     return content
 
 
+RECENT = 6  # Messages of conversation kept: the last three edits and their replies.
+OLD_BUFFER = re.compile(r"<buffer>\n.*?\n</buffer>", flags=re.DOTALL)
+STALE = "<buffer>\n(an earlier copy, now out of date; the latest message has the buffer)\n</buffer>"
+
+
+def recent(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """The last RECENT messages, starting at a request, with every buffer but the newest
+    cut out: only the latest copy is current, and old copies would cost a file per edit."""
+    kept = messages[-RECENT:]
+    while kept and not isinstance(kept[0], ModelRequest):
+        kept = kept[1:]
+    trimmed = [stale(m) if i < len(kept) - 1 else m for i, m in enumerate(kept)]
+    assert trimmed and isinstance(trimmed[0], ModelRequest), (
+        f"history must start with a request, not {type(trimmed[0]).__name__ if trimmed else None}"
+    )
+    assert len(trimmed) <= RECENT, f"kept {len(trimmed)} messages, more than {RECENT}"
+    return trimmed
+
+
+def stale(message: ModelMessage) -> ModelMessage:
+    """A request with its buffer copy replaced by a note that it's out of date."""
+    if not isinstance(message, ModelRequest):
+        return message
+    assert message.parts, "a request without parts can't be sent; drop it instead"
+    parts = [
+        replace(part, content=OLD_BUFFER.sub(STALE, part.content))
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+        else part
+        for part in message.parts
+    ]
+    assert len(parts) == len(message.parts), f"{len(message.parts)} parts became {len(parts)}"
+    return replace(message, parts=parts)
+
+
 class CodeEditor:
     def __init__(self, model: str) -> None:
         from pydantic_ai import Agent
+        from pydantic_ai.capabilities import Caching, ProcessHistory
 
         assert model, "no coding model named; set --model or VOICECODE_MODEL"
         assert model == model.strip(), (
@@ -83,9 +120,11 @@ class CodeEditor:
         self.usage: str = ""  # Token counts of the last edit, for the log.
         self.failure: str = ""  # Why the last reply couldn't be applied, for the log.
         self.reply: str = ""  # The model's last reply, as it gave it.
+        self.conversations: dict[str, Conversation] = {}  # One per file being dictated into.
         self.agent: Agent[None, str] = Agent(
             model,
             output_type=str,
+            capabilities=[Caching(), ProcessHistory(recent)],
             instructions=(
                 "You are continuously editing ONE Neovim source buffer. "
                 "The buffer contains ordinary source code and natural-language speech "
@@ -94,6 +133,12 @@ class CodeEditor:
                 "instructions into working code and revise existing code as requested. "
                 "Remove each AI: comment once implemented, but keep every other comment, "
                 "and never change the syntax of existing comments. "
+                "Speech is edited in continuously, so an earlier edit may already have "
+                "turned the start of a sentence into code, leaving only its end in an AI: "
+                "comment. Earlier messages show what was said and how you answered: read "
+                "the AI: comments as continuing them, and extend the code you wrote rather "
+                "than treating the rest of a sentence as a new request. Earlier replies may "
+                "not have been applied; the buffer in the latest message is the current one. "
                 "Answer with ONLY search/replace blocks, nothing else:\n"
                 f"{SEARCH}\n<lines exactly as they are in the buffer>\n{DIVIDER}\n"
                 f"<what they become>\n{REPLACE}\n"
@@ -121,11 +166,14 @@ class CodeEditor:
             ]
         )
         try:
-            result = await self.agent.run(prompt, model_settings=self.settings)
+            result = await self.agent.run(
+                prompt, model_settings=self.settings, conversation=self.conversations.get(filename)
+            )
         except UnexpectedModelBehavior as error:
             # An empty reply, retried until the limit: the model had nothing to change.
             self.failure = f"the model gave no usable reply ({error})"
             return ""
+        self.conversations[filename] = result.conversation
         used = result.usage
         self.usage = f"{used.input_tokens} tokens in, {used.output_tokens} out"
         self.reply = result.output
