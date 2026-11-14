@@ -9,11 +9,20 @@ import re
 from dataclasses import dataclass
 from typing import cast
 
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModelSettings
 
 MODEL = "openai:gpt-6-luna"  # The default; VOICECODE_MODEL picks another.
 SEARCH, DIVIDER, REPLACE = "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE"
 BLOCK = re.compile(rf"^{SEARCH}\n(.*?)^{DIVIDER}\n(.*?)^{REPLACE}$", flags=re.MULTILINE | re.DOTALL)
+
+
+@dataclass(frozen=True)
+class Kind:
+    """What sort of file the buffer is, so the model writes in its syntax."""
+
+    filetype: str  # Neovim's 'filetype', e.g. "asciidoc"; "" when unknown.
+    comment: tuple[str, str]  # Its comment opener and closer, e.g. ("//", "").
 
 
 @dataclass(frozen=True)
@@ -80,10 +89,11 @@ class CodeEditor:
             instructions=(
                 "You are continuously editing ONE Neovim source buffer. "
                 "The buffer contains ordinary source code and natural-language speech "
-                "inserted by live transcription, usually as comments tagged 'AI:' "
-                "(for example '# AI: add a timeout'). Transform the spoken instructions "
-                "into working code and revise existing code as requested. Remove each "
-                "AI: comment once implemented, but keep every other comment. "
+                "inserted by live transcription, usually as comments tagged 'AI:' in the "
+                "file's own comment syntax, which the prompt names. Transform the spoken "
+                "instructions into working code and revise existing code as requested. "
+                "Remove each AI: comment once implemented, but keep every other comment, "
+                "and never change the syntax of existing comments. "
                 "Answer with ONLY search/replace blocks, nothing else:\n"
                 f"{SEARCH}\n<lines exactly as they are in the buffer>\n{DIVIDER}\n"
                 f"<what they become>\n{REPLACE}\n"
@@ -95,13 +105,27 @@ class CodeEditor:
             ),
         )
 
-    async def transform(self, content: str, filename: str) -> str:
+    async def transform(self, content: str, filename: str, kind: Kind) -> str:
         """The whole buffer with the model's changes made, or "" (with `failure` set)
         when there are none or they don't fit the buffer."""
         assert content.strip(), "asked to transform an empty buffer; snapshot() needs speech"
         assert filename, "no filename for the prompt; NvimEditor.name() falls back to untitled.py"
-        prompt = f"Filename: {filename}\n<buffer>\n{content}\n</buffer>"
-        result = await self.agent.run(prompt, model_settings=self.settings)
+        opener, closer = kind.comment
+        syntax = f"{opener} AI: ... {closer}".strip() if opener else "plain text, no comments"
+        prompt = "\n".join(
+            [
+                f"Filename: {filename}",
+                f"Filetype: {kind.filetype or 'unknown'}",
+                f"Spoken instructions in this file look like: {syntax}",
+                f"<buffer>\n{content}\n</buffer>",
+            ]
+        )
+        try:
+            result = await self.agent.run(prompt, model_settings=self.settings)
+        except UnexpectedModelBehavior as error:
+            # An empty reply, retried until the limit: the model had nothing to change.
+            self.failure = f"the model gave no usable reply ({error})"
+            return ""
         used = result.usage
         self.usage = f"{used.input_tokens} tokens in, {used.output_tokens} out"
         self.reply = result.output

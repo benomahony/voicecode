@@ -57,6 +57,13 @@ class NvimEditor:
         assert (r1, c1) <= (r2, c2), f"splice starts at {(r1, c1)}, after its end {(r2, c2)}"
         self.nvim.api.buf_set_text(self.nvim.buffers[buffer], r1, c1, r2, c2, text.split("\n"))
 
+    def filetype(self, buffer: int) -> str:
+        """The buffer's 'filetype', such as "python" or "asciidoc"; "" if none is set."""
+        assert buffer > 0, f"buffer {buffer} does not exist; Neovim numbers buffers from 1"
+        kind = self.nvim.api.get_option_value("filetype", {"buf": buffer})
+        assert "\n" not in kind, f"buffer {buffer} has filetype {kind!r}; the prompt needs one line"
+        return kind
+
     def comment(self, buffer: int) -> tuple[str, str]:
         """The buffer's 'commentstring' split around %s, e.g. ("#", "") or ("/*", "*/");
         ("", "") when it has none, so speech is plain text."""

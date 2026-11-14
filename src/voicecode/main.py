@@ -22,7 +22,7 @@ import typer
 from pydantic_ai.exceptions import ModelAuthenticationError, UserError
 from pynvim.api import NvimError
 
-from voicecode.coder import MODEL, CodeEditor
+from voicecode.coder import MODEL, CodeEditor, Kind
 from voicecode.nvim import NvimEditor
 from voicecode.owner import BufferOwner
 from voicecode.speech import (
@@ -115,6 +115,13 @@ class Session:
         transcriber = await asyncio.to_thread(Transcriber, options.asr_model)
         await cls(options, writer, editor, owner, transcriber, coder).listen()
 
+    def kind(self, buffer: int) -> Kind:
+        """The buffer's filetype and comment syntax, for the model's prompt."""
+        assert buffer > 0, f"buffer {buffer} does not exist; Neovim numbers buffers from 1"
+        kind = Kind(self.editor.filetype(buffer), self.editor.comment(buffer))
+        assert not kind.comment[1] or kind.comment[0], f"comment closer without opener: {kind}"
+        return kind
+
     async def edit_snapshot(self) -> None:
         assert self.coding is not None, "edit_snapshot runs only as the task transform_soon starts"
         try:
@@ -127,7 +134,8 @@ class Session:
             self.last_sent = snapshot.content
             filename = await self.writer.call(partial(self.editor.name, snapshot.buffer))
             asked = time.monotonic()
-            replacement = await self.coder.transform(snapshot.content, filename)
+            kind = await self.writer.call(partial(self.kind, snapshot.buffer))
+            replacement = await self.coder.transform(snapshot.content, filename, kind)
             took = time.monotonic() - asked
             if not replacement:
                 reason = self.coder.failure

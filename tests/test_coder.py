@@ -3,9 +3,20 @@ import asyncio
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from voicecode.coder import DIVIDER, REPLACE, SEARCH, Change, CodeEditor, apply, changes, echoed
+from voicecode.coder import (
+    DIVIDER,
+    REPLACE,
+    SEARCH,
+    Change,
+    CodeEditor,
+    Kind,
+    apply,
+    changes,
+    echoed,
+)
 
 BUFFER = "def f():\n    # AI: return two\n    return 1\n\ndef g():\n    return 1"
+PYTHON = Kind("python", ("#", ""))
 
 
 def block(search: str, replace: str) -> str:
@@ -41,14 +52,14 @@ def test_the_agent_makes_the_blocks_it_was_given() -> None:
         custom_output_text=block("    # AI: return two\n    return 1", "    return 2")
     )
     with coder.agent.override(model=reply):
-        out = asyncio.run(coder.transform(BUFFER, "a.py"))
+        out = asyncio.run(coder.transform(BUFFER, "a.py", PYTHON))
     assert out.startswith("def f():\n    return 2\n"), f"the block must be applied: {out!r}"
 
 
 def test_a_reply_without_blocks_changes_nothing_and_says_why() -> None:
     coder = CodeEditor("test")
     with coder.agent.override(model=TestModel(custom_output_text="I can't do that.")):
-        out = asyncio.run(coder.transform(BUFFER, "a.py"))
+        out = asyncio.run(coder.transform(BUFFER, "a.py", PYTHON))
     assert out == "", f"prose must not become the buffer: {out!r}"
     assert coder.failure == "the model made no changes", (
         f"the log needs a reason: {coder.failure!r}"

@@ -52,8 +52,9 @@ def word_end(text: str, offset: int) -> int:
 
 def anchor_offset(text: str, cursor: int, comment: tuple[str, str]) -> int:
     """Where speech for a cursor goes: at the cursor, but never inside a word; and for
-    line comments with code after the cursor, at the end of that line as a trailing
-    comment, since a line comment would otherwise comment out or split that code."""
+    line comments with code after the cursor, at the end of that line, where render()
+    starts a line of its own, since a line comment would otherwise comment out or split
+    that code."""
     opener, closer = comment
     if opener and not closer and line_rest(text, cursor).strip():
         offset = cursor + len(line_rest(text, cursor))
@@ -120,8 +121,9 @@ def body(words: tuple[str, ...], comment: tuple[str, str], continuing: bool) -> 
 def render(words: tuple[str, ...], before: str, after: str, comment: tuple[str, str]) -> str:
     """Spoken words as buffer text between `before` and `after`, the rest of their line on
     each side. On a line whose voice comment is already open before them (a line comment),
-    they continue it instead of opening another. A new line comment followed by code on
-    its line ends the line, so that code stays code."""
+    they continue it instead of opening another. A new line comment gets a line of its
+    own, indented like its neighbour: some languages, such as AsciiDoc, only read a line
+    comment at the start of a line, and code on either side must stay code."""
     assert "\n" not in before, f"before is the start of one line, got {before!r}"
     assert "\n" not in after, f"after is the rest of one line, got {after!r}"
     if not words:
@@ -130,7 +132,9 @@ def render(words: tuple[str, ...], before: str, after: str, comment: tuple[str, 
     line_comment = bool(opener) and not closer
     continuing = line_comment and f"{opener} {MARK}" in before
     text = body(words, comment, continuing)
-    if before[-1:] and not before[-1:].isspace():
+    if line_comment and not continuing and before.strip():
+        text = "\n" + before[: len(before) - len(before.lstrip())] + text
+    elif before[-1:] and not before[-1:].isspace():
         text = " " + text
     if line_comment and not continuing and after.strip():
         return text + "\n"

@@ -213,12 +213,12 @@ def test_speech_is_a_tagged_comment_in_the_buffer_syntax() -> None:
     assert editor.read(1) == "x = 1\n# AI: make a function", editor.read(1)
 
 
-def test_line_comment_mid_line_becomes_a_trailing_comment() -> None:
+def test_line_comment_mid_line_goes_on_its_own_line() -> None:
     editor = python("foo(bar)", cursor=4)
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("pass a timeout")
-    assert editor.read(1) == "foo(bar) # AI: pass a timeout", editor.read(1)
+    assert editor.read(1) == "foo(bar)\n# AI: pass a timeout", editor.read(1)
 
 
 def test_block_comment_wraps_speech_and_speech_cannot_close_it() -> None:
@@ -239,9 +239,9 @@ def test_commented_speech_keeps_flowing_after_a_code_edit() -> None:
     assert snapshot is not None, "commented speech must give a snapshot"
     owner.partial("make x one and y two")
     assert owner.apply_code(snapshot, "x = 1"), f"edit must rebase over {editor.read(1)!r}"
-    assert editor.read(1) == "x = 1 # AI: and y two", editor.read(1)
+    assert editor.read(1) == "x = 1\n# AI: and y two", editor.read(1)
     owner.partial("make x one and y two three")
-    assert editor.read(1) == "x = 1 # AI: and y two three", (
+    assert editor.read(1) == "x = 1\n# AI: and y two three", (
         f"later words must follow without dropping or repeating any: {editor.read(1)!r}"
     )
 
@@ -253,7 +253,7 @@ def test_cursor_move_counts_spoken_words_not_comment_markup() -> None:
     owner.partial("one two")
     editor.cursor = 0
     owner.partial("one two three")
-    assert editor.read(1) == "a = 1 # AI: three\n# AI: one two", (
+    assert editor.read(1) == "a = 1\n# AI: three\n# AI: one two", (
         f"the moved-to speech must hold exactly the new word: {editor.read(1)!r}"
     )
 
@@ -274,7 +274,7 @@ def test_indented_python_keeps_its_indentation() -> None:
     owner = BufferOwner(editor)
     owner.start_utterance()
     owner.partial("return y instead")
-    assert editor.read(1) == "def f():\n    return x # AI: return y instead", editor.read(1)
+    assert editor.read(1) == "def f():\n    return x\n    # AI: return y instead", editor.read(1)
 
 
 def test_a_pause_continues_the_voice_comment_instead_of_opening_another() -> None:
@@ -300,7 +300,7 @@ def test_a_continuation_gets_its_own_comment_once_the_one_it_joined_is_code() ->
     owner.partial("and y two")
     assert editor.read(1) == "# AI: make x one and y two", editor.read(1)
     assert owner.apply_code(snapshot, "x = 1"), f"edit must rebase over {editor.read(1)!r}"
-    assert editor.read(1) == "x = 1 # AI: and y two", (
+    assert editor.read(1) == "x = 1\n# AI: and y two", (
         f"words that joined a comment now turned to code need their own: {editor.read(1)!r}"
     )
 
@@ -314,7 +314,7 @@ def test_a_code_edit_survives_the_recognizer_changing_punctuation_and_case() -> 
     assert snapshot is not None, "speech must give a snapshot"
     owner.partial("make x one, and y two")
     assert owner.apply_code(snapshot, "x = 1"), f"punctuation must not void {snapshot!r}"
-    assert editor.read(1) == "x = 1 # AI: and y two", editor.read(1)
+    assert editor.read(1) == "x = 1\n# AI: and y two", editor.read(1)
 
 
 def test_a_revised_last_word_comes_back_after_the_code_instead_of_being_lost() -> None:
@@ -326,6 +326,17 @@ def test_a_revised_last_word_comes_back_after_the_code_instead_of_being_lost() -
     assert snapshot is not None, "speech must give a snapshot"
     owner.partial("make x one and actually y two")
     assert owner.apply_code(snapshot, "x = 1"), f"a half-heard last word must not void {snapshot!r}"
-    assert editor.read(1) == "x = 1 # AI: actually y two", (
+    assert editor.read(1) == "x = 1\n# AI: actually y two", (
         f"the revised word must reappear, not vanish: {editor.read(1)!r}"
+    )
+
+
+def test_asciidoc_speech_starts_its_own_line_so_it_stays_a_comment() -> None:
+    editor = FakeEditor("= Title\n\nSome text.", cursor=9)
+    editor.style = ("//", "")
+    owner = BufferOwner(editor)
+    owner.start_utterance()
+    owner.partial("add a table of contents")
+    assert editor.read(1) == "= Title\n\nSome text.\n// AI: add a table of contents", (
+        f"an AsciiDoc comment only counts at the start of a line: {editor.read(1)!r}"
     )

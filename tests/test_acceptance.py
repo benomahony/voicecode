@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from voicecode.coder import MODEL, CodeEditor, changes, echoed
+from voicecode.coder import MODEL, CodeEditor, Kind, changes, echoed
 
 CONTEXT = 2  # Unchanged lines a reply may repeat, to anchor its search.
 
@@ -34,6 +34,7 @@ EDITED = """def total(prices: list[float]) -> float:
 """
 
 BUFFER = UNTOUCHED + "\n\n" + EDITED
+PYTHON = Kind("python", ("#", ""))
 
 needs_a_key = pytest.mark.skipif(
     os.environ.get("VOICECODE_MODEL", MODEL).startswith("openai:")
@@ -45,7 +46,7 @@ needs_a_key = pytest.mark.skipif(
 @needs_a_key
 def test_the_model_sends_a_diff_not_a_rewrite_of_existing_code() -> None:
     coder = CodeEditor(os.environ.get("VOICECODE_MODEL", MODEL))
-    result = asyncio.run(coder.transform(BUFFER, "shop.py"))
+    result = asyncio.run(coder.transform(BUFFER, "shop.py", PYTHON))
     reply = coder.reply
     assert result, f"the edit must apply ({coder.failure}); the model replied:\n{reply}"
     assert "AI:" not in result, f"the spoken instruction must be replaced:\n{result}"
