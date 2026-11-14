@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from voicecode.coder import DIVIDER, REPLACE, SEARCH, Change, CodeEditor, apply, changes
+from voicecode.coder import DIVIDER, REPLACE, SEARCH, Change, CodeEditor, apply, changes, echoed
 
 BUFFER = "def f():\n    # AI: return two\n    return 1\n\ndef g():\n    return 1"
 
@@ -53,3 +53,8 @@ def test_a_reply_without_blocks_changes_nothing_and_says_why() -> None:
     assert coder.failure == "the model made no changes", (
         f"the log needs a reason: {coder.failure!r}"
     )
+
+
+def test_echoed_lines_are_the_unchanged_ones_a_reply_repeats() -> None:
+    edits = [Change("    a = 1\n    # AI: double b\n    b = 2", "    a = 1\n    b = 4")]
+    assert echoed(edits) == ["    a = 1"], f"only the unchanged line is an echo: {echoed(edits)}"

@@ -22,7 +22,7 @@ import typer
 from pydantic_ai.exceptions import ModelAuthenticationError, UserError
 from pynvim.api import NvimError
 
-from voicecode.coder import CodeEditor
+from voicecode.coder import MODEL, CodeEditor
 from voicecode.nvim import NvimEditor
 from voicecode.owner import BufferOwner
 from voicecode.speech import (
@@ -269,7 +269,7 @@ def list_devices(value: bool) -> None:
 
 def serve(
     socket: Annotated[str, typer.Option(help="Neovim listen socket")],
-    model: Annotated[str, typer.Option(envvar="VOICECODE_MODEL")] = "openai:gpt-6-luna",
+    model: Annotated[str, typer.Option(envvar="VOICECODE_MODEL")] = MODEL,
     asr_model: Annotated[str, typer.Option(envvar="VOICECODE_ASR_MODEL")] = "base.en",
     device: Annotated[
         str | None,

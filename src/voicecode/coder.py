@@ -11,6 +11,7 @@ from typing import cast
 
 from pydantic_ai.models.openai import OpenAIChatModelSettings
 
+MODEL = "openai:gpt-6-luna"  # The default; VOICECODE_MODEL picks another.
 SEARCH, DIVIDER, REPLACE = "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE"
 BLOCK = re.compile(rf"^{SEARCH}\n(.*?)^{DIVIDER}\n(.*?)^{REPLACE}$", flags=re.MULTILINE | re.DOTALL)
 
@@ -30,6 +31,17 @@ def changes(reply: str) -> list[Change]:
     assert len(found) <= reply.count(SEARCH), f"parsed {len(found)} blocks from fewer markers"
     assert all(SEARCH not in c.search for c in found), f"a block swallowed another: {found}"
     return found
+
+
+def echoed(edits: list[Change]) -> list[str]:
+    """Non-blank lines a reply sends back unchanged: in a block's search and its replace."""
+    repeated: list[str] = []
+    for edit in edits:
+        kept = set(edit.search.split("\n"))
+        repeated += [line for line in edit.replace.split("\n") if line.strip() and line in kept]
+    assert all(line.strip() for line in repeated), f"blank lines aren't echoes: {repeated}"
+    assert len(repeated) <= sum(e.replace.count("\n") + 1 for e in edits), f"{repeated}"
+    return repeated
 
 
 def apply(content: str, edits: list[Change]) -> str:
