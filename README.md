@@ -97,7 +97,7 @@ Everything said by anyone becomes buffer text, so agree who is driving.
 
 ### API key
 
-The default model is `openai:gpt-4.1-mini`. Its key is taken from, in order:
+The default model is `openai:gpt-6-luna`. Its key is taken from, in order:
 
 1. `OPENAI_API_KEY` in the environment Neovim was started from.
 2. `vim.g.voicecode_api_key_cmd`, a command that prints the key, for example

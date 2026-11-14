@@ -59,9 +59,12 @@ class CodeEditor:
         assert model == model.strip(), (
             f"coding model {model!r} has surrounding whitespace; check VOICECODE_MODEL"
         )
-        # Plain text, not a tool call, so OpenAI's predicted outputs can stream back the
-        # unchanged lines of the region almost for free; tools would rule that out.
-        self.predict: bool = model.startswith("openai:")
+        # OpenAI's current models reason before answering by default; a spoken edit
+        # wants the answer at once, so turn reasoning off.
+        self.settings: OpenAIChatModelSettings = (
+            {"openai_reasoning_effort": "none"} if model.startswith("openai:") else {}
+        )
+        self.usage: str = ""  # Token counts of the last edit, for the log.
         self.agent: Agent[None, str] = Agent(
             model,
             output_type=str,
@@ -96,10 +99,10 @@ class CodeEditor:
             ]
         )
         original = content[region.start : region.stop]
-        settings: OpenAIChatModelSettings = (
-            {"openai_prediction": {"type": "content", "content": original}} if self.predict else {}
-        )
-        rewritten = unfenced((await self.agent.run(prompt, model_settings=settings)).output)
+        result = await self.agent.run(prompt, model_settings=self.settings)
+        used = result.usage
+        self.usage = f"{used.input_tokens} tokens in, {used.output_tokens} out"
+        rewritten = unfenced(result.output)
         if not resembles(rewritten, original):
             return ""  # Prose: an empty edit, which apply_code refuses.
         return content[: region.start] + rewritten + content[region.stop :]

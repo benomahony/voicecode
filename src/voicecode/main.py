@@ -131,7 +131,12 @@ class Session:
             replacement = await self.coder.transform(snapshot.content, filename, speech)
             took = time.monotonic() - asked
             if await self.writer.call(partial(self.owner.apply_code, snapshot, replacement)):
-                print(f"Edit applied; the model took {took:.1f}s", file=sys.stderr, flush=True)
+                used = self.coder.usage
+                print(
+                    f"Edit applied; the model took {took:.1f}s ({used})",
+                    file=sys.stderr,
+                    flush=True,
+                )
             else:
                 reason = self.owner.rejected
                 print(f"Edit discarded after {took:.1f}s: {reason}", file=sys.stderr, flush=True)
@@ -262,7 +267,7 @@ def list_devices(value: bool) -> None:
 
 def serve(
     socket: Annotated[str, typer.Option(help="Neovim listen socket")],
-    model: Annotated[str, typer.Option(envvar="VOICECODE_MODEL")] = "openai:gpt-4.1-mini",
+    model: Annotated[str, typer.Option(envvar="VOICECODE_MODEL")] = "openai:gpt-6-luna",
     asr_model: Annotated[str, typer.Option(envvar="VOICECODE_ASR_MODEL")] = "base.en",
     device: Annotated[
         str | None,
