@@ -1,50 +1,55 @@
 import asyncio
 
+import pytest
 from pydantic_ai.models.test import TestModel
 
-from voicecode.coder import WINDOW_LINES, CodeEditor, resembles, unfenced, window
+from voicecode.coder import DIVIDER, REPLACE, SEARCH, Change, CodeEditor, apply, changes
 
-LINES = [f"line {n}" for n in range(100)]
-CONTENT = "\n".join(LINES)
-
-
-def test_the_window_is_whole_lines_around_the_speech() -> None:
-    speech_line = 50
-    start = CONTENT.index(f"line {speech_line}")
-    region = window(CONTENT, range(start, start + 4))
-    lines = CONTENT[region.start : region.stop].split("\n")
-    assert lines[0] == f"line {speech_line - WINDOW_LINES}", f"window starts at {lines[0]!r}"
-    assert lines[-1] == f"line {speech_line + WINDOW_LINES}", f"window ends at {lines[-1]!r}"
+BUFFER = "def f():\n    # AI: return two\n    return 1\n\ndef g():\n    return 1"
 
 
-def test_the_window_stops_at_the_ends_of_the_buffer() -> None:
-    region = window(CONTENT, range(4))
-    assert region.start == 0, f"a window can't start before the buffer: {region}"
-    end = window(CONTENT, range(len(CONTENT) - 4, len(CONTENT)))
-    assert end.stop == len(CONTENT), f"a window can't end past the buffer: {end}"
+def block(search: str, replace: str) -> str:
+    return f"{SEARCH}\n{search}\n{DIVIDER}\n{replace}\n{REPLACE}"
 
 
-def test_only_the_window_changes_and_the_rest_of_the_buffer_is_kept() -> None:
-    content = CONTENT.replace("line 50", "# AI: make line 50 shout")
-    start = content.index("# AI:")
+def test_blocks_are_read_from_the_reply_in_order() -> None:
+    reply = "Sure.\n" + block("a", "b") + "\n" + block("c\nd", "e")
+    assert changes(reply) == [Change("a", "b"), Change("c\nd", "e")], changes(reply)
+
+
+def test_only_the_changed_lines_are_replaced() -> None:
+    edit = Change("    # AI: return two\n    return 1", "    return 2")
+    out = apply(BUFFER, [edit])
+    assert out == "def f():\n    return 2\n\ndef g():\n    return 1", repr(out)
+
+
+def test_a_search_that_matches_twice_is_refused() -> None:
+    with pytest.raises(ValueError, match="2 times") as error:
+        _ = apply(BUFFER, [Change("    return 1", "    return 2")])
+    assert "return 1" in str(error.value), f"the error should quote the search: {error.value}"
+
+
+def test_a_search_that_is_not_in_the_buffer_is_refused() -> None:
+    with pytest.raises(ValueError, match="isn't in the buffer") as error:
+        _ = apply(BUFFER, [Change("    return 3", "    return 2")])
+    assert "return 3" in str(error.value), f"the error should quote the search: {error.value}"
+
+
+def test_the_agent_makes_the_blocks_it_was_given() -> None:
     coder = CodeEditor("test")
-    rewritten = TestModel(custom_output_text="line 49\nLINE 50\nline 51")
-    with coder.agent.override(model=rewritten):
-        out = asyncio.run(coder.transform(content, "a.py", range(start, start + 24)))
-    lines = out.split("\n")
-    assert lines[:30] == LINES[:30], f"lines above the window must be untouched: {lines[:30]}"
-    assert lines[30:33] == ["line 49", "LINE 50", "line 51"], f"window not replaced: {lines[30:33]}"
-    assert lines[33:] == LINES[71:], f"lines below the window must be untouched: {lines[33:]}"
-
-
-def test_a_fenced_region_loses_its_fence() -> None:
-    assert unfenced("```python\nx = 1\n```") == "x = 1", "the fence must not reach the buffer"
-    assert unfenced("x = 1") == "x = 1", "an unfenced region must come back unchanged"
-
-
-def test_prose_is_not_taken_for_the_region() -> None:
-    region = "def f():\n    # AI: return two\n    return 1"
-    assert not resembles("Sure! Here is the updated function.", region), (
-        f"prose replaced {region!r}"
+    reply = TestModel(
+        custom_output_text=block("    # AI: return two\n    return 1", "    return 2")
     )
-    assert resembles("def f():\n    return 2", region), f"a rewrite of {region!r} shares lines"
+    with coder.agent.override(model=reply):
+        out = asyncio.run(coder.transform(BUFFER, "a.py"))
+    assert out.startswith("def f():\n    return 2\n"), f"the block must be applied: {out!r}"
+
+
+def test_a_reply_without_blocks_changes_nothing_and_says_why() -> None:
+    coder = CodeEditor("test")
+    with coder.agent.override(model=TestModel(custom_output_text="I can't do that.")):
+        out = asyncio.run(coder.transform(BUFFER, "a.py"))
+    assert out == "", f"prose must not become the buffer: {out!r}"
+    assert coder.failure == "the model made no changes", (
+        f"the log needs a reason: {coder.failure!r}"
+    )

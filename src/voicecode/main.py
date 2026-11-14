@@ -126,11 +126,13 @@ class Session:
             )
             self.last_sent = snapshot.content
             filename = await self.writer.call(partial(self.editor.name, snapshot.buffer))
-            speech = range(snapshot.start, snapshot.end)
             asked = time.monotonic()
-            replacement = await self.coder.transform(snapshot.content, filename, speech)
+            replacement = await self.coder.transform(snapshot.content, filename)
             took = time.monotonic() - asked
-            if await self.writer.call(partial(self.owner.apply_code, snapshot, replacement)):
+            if not replacement:
+                reason = self.coder.failure
+                print(f"No edit after {took:.1f}s: {reason}", file=sys.stderr, flush=True)
+            elif await self.writer.call(partial(self.owner.apply_code, snapshot, replacement)):
                 used = self.coder.usage
                 print(
                     f"Edit applied; the model took {took:.1f}s ({used})",
